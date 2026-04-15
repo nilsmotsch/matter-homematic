@@ -1,0 +1,43 @@
+{
+  "bridge": {
+    "name": "Matter-Homematic",
+    "port": 5540,
+    "passcode": 20242024,
+    "discriminator": 3840,
+    "vendorId": 65521,
+    "productId": 32769,
+    "storagePath": "./.matter-homematic"
+  },
+  "ccu": {
+    "host": "192.168.1.100",
+    "interfaces": {
+      "BidCos-RF": {
+        "enabled": true,
+        "port": 2001
+      },
+      "HmIP-RF": {
+        "enabled": true,
+        "port": 2010
+      },
+      "VirtualDevices": {
+        "enabled": false,
+        "port": 9292
+      }
+    },
+    "callbackPort": 9875,
+    "callbackHost": ""
+  },
+  "devices": {
+    "filter": {
+      "rooms": [],
+      "functions": [],
+      "include": [],
+      "exclude": []
+    },
+    "customMappings": []
+  },
+  "logging": {
+    "level": "info",
+    "file": ""
+  }
+}

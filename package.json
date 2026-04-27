@@ -11,7 +11,9 @@
     "watch": "tsc --watch",
     "clean": "rm -rf dist",
     "lint": "eslint 'src/**/*.ts'",
-    "test": "jest"
+    "test": "jest",
+    "test:ccu": ".venv/bin/python3 -m pydevccu",
+    "dev:test": "ts-node src/index.ts --config=config.test.json"
   },
   "keywords": [
     "matter",

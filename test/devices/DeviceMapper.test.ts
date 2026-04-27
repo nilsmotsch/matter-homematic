@@ -73,6 +73,18 @@ describe('DeviceMapper', () => {
       expect(result).toBeNull();
     });
 
+    it('skips MAINTENANCE channels even when device type matches a pattern', () => {
+      // Regression: HM-LC-Bl1-FM:0 is the MAINTENANCE channel; without the
+      // guard, device-type fallback would wrongly map it to WindowCovering.
+      const result = mapper.mapChannel('VCU0000045:0', 'MAINTENANCE', 'HM-LC-Bl1-FM', '', {});
+      expect(result).toBeNull();
+    });
+
+    it('skips MAINTENANCE_VIRTUAL_RECEIVER channels', () => {
+      const result = mapper.mapChannel('HmIP.001:0', 'MAINTENANCE_VIRTUAL_RECEIVER', 'HmIP-PSM', '', {});
+      expect(result).toBeNull();
+    });
+
     it('infers channel type from device type when channel type is unknown', () => {
       const result = mapper.mapChannel('HmIP.001:3', 'UNKNOWN', 'HmIP-PSM', 'IP Switch', { STATE: true });
       expect(result).not.toBeNull();
@@ -144,6 +156,77 @@ describe('DeviceMapper', () => {
       it('converts Matter fully closed to HM fully closed', () => {
         const result = mapper.convertToHomematic('ADDR:1', 'windowCovering', 'currentPositionLiftPercent100ths', 10000);
         expect(result!.value).toBe(0.0); // HM 0.0 = closed
+      });
+    });
+
+    describe('blind tilt (HmIP-FBL venetian LEVEL_2 exposed as TiltPercent100ths)', () => {
+      it('detects tilt when LEVEL_2 is a number (venetian) and maps both lift and tilt', () => {
+        const result = mapper.mapChannel(
+          'HMIP-FBL:4', 'BLIND_VIRTUAL_RECEIVER', 'HmIP-FBL', 'Rolladen',
+          { LEVEL: 0.5, LEVEL_2: 0.25 }
+        );
+        expect(result).not.toBeNull();
+        expect(result!.hasTilt).toBe(true);
+
+        expect(mapper.convertToMatter('HMIP-FBL:4', 'LEVEL_2', 0.0)!.value).toBe(10000);
+        expect(mapper.convertToMatter('HMIP-FBL:4', 'LEVEL_2', 1.0)!.value).toBe(0);
+        expect(mapper.convertToHomematic('HMIP-FBL:4', 'windowCovering', 'currentPositionTiltPercent100ths', 0)!.value).toBe(1.0);
+        expect(mapper.convertToHomematic('HMIP-FBL:4', 'windowCovering', 'currentPositionTiltPercent100ths', 10000)!.value).toBe(0.0);
+      });
+
+      it('strips LEVEL_2 when it is the empty string (roller/screen/awning mode)', () => {
+        const result = mapper.mapChannel(
+          'HMIPW-DRBL4:2', 'BLIND_VIRTUAL_RECEIVER', 'HmIPW-DRBL4', 'Rolladen Arbeitszimmer',
+          { LEVEL: 0.0, LEVEL_2: '' }
+        );
+        expect(result).not.toBeNull();
+        expect(result!.hasTilt).toBeUndefined();
+        // No tilt conversion should be wired up
+        expect(mapper.convertToMatter('HMIPW-DRBL4:2', 'LEVEL_2', 0.5)).toBeNull();
+        expect(mapper.convertToHomematic('HMIPW-DRBL4:2', 'windowCovering', 'currentPositionTiltPercent100ths', 5000)).toBeNull();
+        // Lift still works
+        expect(mapper.convertToMatter('HMIPW-DRBL4:2', 'LEVEL', 0.0)!.value).toBe(10000);
+      });
+
+      it('does not mutate the shared mapping when stripping LEVEL_2 on one channel', () => {
+        // Roller channel first — strips LEVEL_2 from its own clone
+        mapper.mapChannel('ROLL:1', 'BLIND_VIRTUAL_RECEIVER', 'HmIPW-DRBL4', 'Roller', { LEVEL: 0.0, LEVEL_2: '' });
+        // A later venetian channel must still get LEVEL_2 wired up
+        const venetian = mapper.mapChannel('VEN:4', 'BLIND_VIRTUAL_RECEIVER', 'HmIP-FBL', 'Venetian', { LEVEL: 0.0, LEVEL_2: 0.5 });
+        expect(venetian!.hasTilt).toBe(true);
+        expect(mapper.convertToMatter('VEN:4', 'LEVEL_2', 0.5)!.value).toBe(5000);
+      });
+
+      describe('tiltOverride (user-configured via web UI)', () => {
+        it('forces lift-only when tiltOverride=false even if LEVEL_2 is numeric', () => {
+          // HmIP-FBL always reports LEVEL_2 numeric, but the user physically
+          // wired a roller — they set the override in the UI to hide tilt.
+          const result = mapper.mapChannel(
+            'FBL-ROLLER:4', 'BLIND_VIRTUAL_RECEIVER', 'HmIP-FBL', 'Physical roller',
+            { LEVEL: 0.5, LEVEL_2: 1.0 }, undefined, false,
+          );
+          expect(result!.hasTilt).toBeUndefined();
+          expect(mapper.convertToMatter('FBL-ROLLER:4', 'LEVEL_2', 0.5)).toBeNull();
+        });
+
+        it('forces tilt when tiltOverride=true even if LEVEL_2 is the empty string', () => {
+          // Contrived but symmetric: user overrides a channel we'd auto-classify
+          // as roller. Still drive tilt mappings.
+          const result = mapper.mapChannel(
+            'FORCE-TILT:1', 'BLIND_VIRTUAL_RECEIVER', 'HmIPW-DRBL4', 'Force tilt',
+            { LEVEL: 0.0, LEVEL_2: '' }, undefined, true,
+          );
+          expect(result!.hasTilt).toBe(true);
+          expect(result!.valueMappings.LEVEL_2).toBeDefined();
+        });
+
+        it('falls back to auto-detection when tiltOverride is undefined', () => {
+          const result = mapper.mapChannel(
+            'AUTO:4', 'BLIND_VIRTUAL_RECEIVER', 'HmIP-FBL', 'Auto',
+            { LEVEL: 0.5, LEVEL_2: 0.25 }, undefined, undefined,
+          );
+          expect(result!.hasTilt).toBe(true);
+        });
       });
     });
 

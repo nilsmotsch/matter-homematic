@@ -1,5 +1,7 @@
 node_modules/
 dist/
 .matter-homematic/
+.venv/
 config.json
+config.test.json
 *.js.map

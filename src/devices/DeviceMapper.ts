@@ -112,7 +112,14 @@ const CHANNEL_TYPE_MAPPINGS: Record<string, DeviceTypeMapping> = {
     }
   },
 
-  // Blinds / Shutters
+  // Blinds / Shutters.
+  //
+  // HM blind channels always expose LEVEL (lift). Venetian actuators (HmIP-FBL,
+  // HmIP-BBL, some HmIPW-DRBL4 channels) additionally expose LEVEL_2 (slat
+  // tilt). On roller/awning/screen-mode channels, LEVEL_2 is present in the
+  // paramset but reported as the empty string "" — mapChannel strips LEVEL_2
+  // from the runtime valueMappings in that case so Matter won't expose
+  // tilt controls for a roller blind.
   'BLIND': {
     matterType: MatterDeviceType.WindowCovering,
     clusters: ['WindowCovering'],
@@ -123,6 +130,13 @@ const CHANNEL_TYPE_MAPPINGS: Record<string, DeviceTypeMapping> = {
         matterAttribute: 'currentPositionLiftPercent100ths',
         // HM: 0.0 (closed) - 1.0 (open)
         // Matter: 0 (open) - 10000 (closed) - inverted!
+        toMatter: (v) => Math.round((1 - v) * 10000),
+        toHomematic: (v) => 1 - (v / 10000)
+      },
+      LEVEL_2: {
+        hmKey: 'LEVEL_2',
+        matterCluster: 'windowCovering',
+        matterAttribute: 'currentPositionTiltPercent100ths',
         toMatter: (v) => Math.round((1 - v) * 10000),
         toHomematic: (v) => 1 - (v / 10000)
       }
@@ -136,6 +150,13 @@ const CHANNEL_TYPE_MAPPINGS: Record<string, DeviceTypeMapping> = {
         hmKey: 'LEVEL',
         matterCluster: 'windowCovering',
         matterAttribute: 'currentPositionLiftPercent100ths',
+        toMatter: (v) => Math.round((1 - v) * 10000),
+        toHomematic: (v) => 1 - (v / 10000)
+      },
+      LEVEL_2: {
+        hmKey: 'LEVEL_2',
+        matterCluster: 'windowCovering',
+        matterAttribute: 'currentPositionTiltPercent100ths',
         toMatter: (v) => Math.round((1 - v) * 10000),
         toHomematic: (v) => 1 - (v / 10000)
       }
@@ -152,6 +173,7 @@ const CHANNEL_TYPE_MAPPINGS: Record<string, DeviceTypeMapping> = {
         toMatter: (v) => Math.round((1 - v) * 10000),
         toHomematic: (v) => 1 - (v / 10000)
       }
+      // Shutters never tilt.
     }
   },
 
@@ -246,6 +268,21 @@ const CHANNEL_TYPE_MAPPINGS: Record<string, DeviceTypeMapping> = {
     valueMap: {
       MOTION: {
         hmKey: 'MOTION',
+        matterCluster: 'occupancySensing',
+        matterAttribute: 'occupancy',
+        toMatter: (v) => v ? 1 : 0,
+        toHomematic: (v) => Boolean(v)
+      }
+    }
+  },
+  // HmIP-SPI presence detector — reports PRESENCE_DETECTION_STATE instead
+  // of MOTION and also exposes illumination (not bridged here).
+  'PRESENCEDETECTOR_TRANSCEIVER': {
+    matterType: MatterDeviceType.OccupancySensor,
+    clusters: ['OccupancySensing'],
+    valueMap: {
+      PRESENCE: {
+        hmKey: 'PRESENCE_DETECTION_STATE',
         matterCluster: 'occupancySensing',
         matterAttribute: 'occupancy',
         toMatter: (v) => v ? 1 : 0,
@@ -364,6 +401,10 @@ export interface MappedDevice {
   room?: string;
   valueMappings: Record<string, ValueMapping>;
   currentState: Record<string, any>;
+  /** True only for WindowCovering devices where HM reports numeric LEVEL_2
+   *  (venetian slats). MatterBridge uses this to decide whether to add the
+   *  Tilt / PositionAwareTilt features to WindowCoveringServer. */
+  hasTilt?: boolean;
 }
 
 export class DeviceMapper {
@@ -378,14 +419,26 @@ export class DeviceMapper {
     deviceType: string,
     name: string,
     currentValues: Record<string, any>,
-    room?: string
+    room?: string,
+    tiltOverride?: boolean
   ): MappedDevice | null {
-    
+
+    // Skip non-functional channel types. MAINTENANCE exists on nearly every
+    // device (battery, RSSI, firmware) and must never be bridged — otherwise
+    // the device type fallback matches the parent device pattern and creates
+    // a bogus duplicate endpoint.
+    if (channelType === 'MAINTENANCE' || channelType === 'MAINTENANCE_VIRTUAL_RECEIVER') {
+      return null;
+    }
+
     // Try to find mapping by channel type
     let mapping = CHANNEL_TYPE_MAPPINGS[channelType];
-    
-    // If not found, try to infer from device type
-    if (!mapping) {
+
+    // If not found, try to infer from device type — but only when the CCU
+    // gave us no usable channel type. Otherwise we risk matching sub-channels
+    // like CLIMATECONTROL_RT_RECEIVER (the thermostat's button panel) to the
+    // same pattern as the main transceiver channel.
+    if (!mapping && (!channelType || channelType === 'UNKNOWN')) {
       const inferredType = this.inferChannelType(deviceType);
       if (inferredType) {
         mapping = CHANNEL_TYPE_MAPPINGS[inferredType];
@@ -397,6 +450,34 @@ export class DeviceMapper {
       return null;
     }
 
+    // Clone the valueMap — we may prune entries per-channel (e.g. strip
+    // LEVEL_2 from roller-mode blinds) without mutating the static map.
+    const valueMappings: Record<string, ValueMapping> = { ...mapping.valueMap };
+
+    // Blind tilt detection.
+    //
+    //   - HmIPW-DRBL4 firmware returns LEVEL_2 as "" (empty string) when the
+    //     channel is configured as roller/awning/screen. Strong signal.
+    //   - HmIP-FBL is a pure venetian actuator and ALWAYS exposes LEVEL_2 as
+    //     a number, even when the user physically wired a roller to it — the
+    //     firmware can't distinguish the two cases. For those channels the
+    //     caller can force a value via `tiltOverride` (true/false from config).
+    //
+    // Drop the LEVEL_2 mapping for lift-only channels so Matter controllers
+    // don't show ghost tilt controls and we don't emit no-op setValue calls.
+    const rawTilt = currentValues?.LEVEL_2;
+    let hasTilt: boolean;
+    if (tiltOverride !== undefined) {
+      hasTilt = tiltOverride;
+    } else if (rawTilt === '') {
+      hasTilt = false;
+    } else {
+      hasTilt = typeof rawTilt === 'number';
+    }
+    if (!hasTilt && valueMappings.LEVEL_2) {
+      delete valueMappings.LEVEL_2;
+    }
+
     const mappedDevice: MappedDevice = {
       hmAddress: address,
       hmChannelType: channelType,
@@ -405,14 +486,15 @@ export class DeviceMapper {
       clusters: mapping.clusters,
       name: name || address,
       room: room,
-      valueMappings: mapping.valueMap,
-      currentState: {}
+      valueMappings,
+      currentState: {},
+      hasTilt: hasTilt ? true : undefined,
     };
 
     // Convert current values to Matter format
-    for (const [key, valueMapping] of Object.entries(mapping.valueMap)) {
+    for (const [, valueMapping] of Object.entries(valueMappings)) {
       if (currentValues && currentValues[valueMapping.hmKey] !== undefined) {
-        mappedDevice.currentState[valueMapping.matterAttribute] = 
+        mappedDevice.currentState[valueMapping.matterAttribute] =
           valueMapping.toMatter(currentValues[valueMapping.hmKey]);
       }
     }

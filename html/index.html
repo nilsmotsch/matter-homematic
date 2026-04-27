@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en" data-coreui-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Matter-Homematic Bridge</title>
+  <link href="https://cdn.jsdelivr.net/npm/@coreui/coreui@5.3.1/dist/css/coreui.min.css" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/custom.css">
+</head>
+<body>
+  <!-- Sidebar -->
+  <div class="sidebar sidebar-dark sidebar-fixed" id="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-brand-full">
+        <div class="brand-mark">
+          <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+            <rect x="2" y="8" width="24" height="12" rx="2" stroke="currentColor" stroke-width="2"/>
+            <circle cx="8" cy="14" r="2" fill="var(--mhb-accent)"/>
+            <circle cx="14" cy="14" r="2" fill="var(--mhb-accent)"/>
+            <circle cx="20" cy="14" r="2" fill="var(--mhb-accent)"/>
+            <line x1="14" y1="2" x2="14" y2="8" stroke="currentColor" stroke-width="2"/>
+            <line x1="14" y1="20" x2="14" y2="26" stroke="currentColor" stroke-width="2"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-title">MHB</span>
+          <span class="brand-sub">Matter-Homematic</span>
+        </div>
+      </div>
+    </div>
+
+    <ul class="sidebar-nav">
+      <li class="nav-item">
+        <a class="nav-link active" href="#" data-tab="dashboard" onclick="switchTab('dashboard', this)">
+          <svg class="nav-icon" width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <rect x="1" y="1" width="7" height="7" rx="1" stroke="currentColor" stroke-width="1.5"/>
+            <rect x="10" y="1" width="7" height="4" rx="1" stroke="currentColor" stroke-width="1.5"/>
+            <rect x="1" y="10" width="7" height="4" rx="1" stroke="currentColor" stroke-width="1.5"/>
+            <rect x="10" y="7" width="7" height="7" rx="1" stroke="currentColor" stroke-width="1.5"/>
+          </svg>
+          Dashboard
+        </a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link" href="#" data-tab="devices" onclick="switchTab('devices', this)">
+          <svg class="nav-icon" width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <rect x="1" y="3" width="16" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
+            <circle cx="5" cy="9" r="1.5" fill="currentColor"/>
+            <line x1="8" y1="7" x2="14" y2="7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <line x1="8" y1="11" x2="12" y2="11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          Devices
+        </a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link" href="#" data-tab="filters" onclick="switchTab('filters', this)">
+          <svg class="nav-icon" width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <line x1="1" y1="4" x2="17" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <line x1="3" y1="9" x2="15" y2="9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <line x1="6" y1="14" x2="12" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          Filter Config
+        </a>
+      </li>
+    </ul>
+
+    <div class="sidebar-footer">
+      <div class="sidebar-footer-content">
+        <div class="sys-label">SYSTEM</div>
+        <div class="sys-version" id="sidebar-version">v1.0.0</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <div class="wrapper d-flex flex-column min-vh-100">
+    <div class="body flex-grow-1">
+      <div class="container-lg px-4 py-4">
+
+        <!-- Dashboard Tab -->
+        <div id="tab-dashboard" class="tab-content-pane">
+          <div class="content-header">
+            <h1>Dashboard</h1>
+            <div class="header-actions">
+              <button class="btn btn-outline-primary btn-sm" id="restart-btn" onclick="restartBridge()">
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="vertical-align:-2px;margin-right:4px">
+                  <path d="M2 7a5 5 0 019-3m0 0V2m0 2h-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M12 7a5 5 0 01-9 3m0 0v2m0-2h2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                Restart Bridge
+              </button>
+              <span class="header-timestamp" id="last-updated"></span>
+            </div>
+          </div>
+
+          <!-- Status Row -->
+          <div class="row g-3 mb-4">
+            <div class="col-sm-6 col-xl-3">
+              <div class="card stat-card">
+                <div class="card-body">
+                  <div class="stat-label">CCU Connection</div>
+                  <div class="stat-value" id="ccu-status">
+                    <span class="status-dot offline"></span>
+                    <span id="ccu-status-text">--</span>
+                  </div>
+                  <div class="stat-detail mono" id="ccu-host">--</div>
+                </div>
+              </div>
+            </div>
+            <div class="col-sm-6 col-xl-3">
+              <div class="card stat-card">
+                <div class="card-body">
+                  <div class="stat-label">Bridged Devices</div>
+                  <div class="stat-value">
+                    <span class="stat-number" id="device-count">--</span>
+                  </div>
+                  <div class="stat-detail"><span id="endpoint-count">--</span> Matter endpoints</div>
+                </div>
+              </div>
+            </div>
+            <div class="col-sm-6 col-xl-3">
+              <div class="card stat-card">
+                <div class="card-body">
+                  <div class="stat-label">Matter Port</div>
+                  <div class="stat-value">
+                    <span class="stat-number mono" id="matter-port">--</span>
+                  </div>
+                  <div class="stat-detail">UDP</div>
+                </div>
+              </div>
+            </div>
+            <div class="col-sm-6 col-xl-3">
+              <div class="card stat-card">
+                <div class="card-body">
+                  <div class="stat-label">Uptime</div>
+                  <div class="stat-value">
+                    <span class="stat-number mono" id="uptime">--</span>
+                  </div>
+                  <div class="stat-detail" id="bridge-name">--</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Pairing Card -->
+          <div class="row g-3">
+            <div class="col-md-6">
+              <div class="card pairing-card">
+                <div class="card-body">
+                  <div class="pairing-header">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <path d="M10 2L2 7v6l8 5 8-5V7l-8-5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                      <circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="1.5"/>
+                    </svg>
+                    <span>Pairing Information</span>
+                  </div>
+                  <div class="pairing-grid">
+                    <div class="pairing-item">
+                      <div class="pairing-label">Setup Code</div>
+                      <div class="pairing-value mono" id="passcode">--</div>
+                    </div>
+                    <div class="pairing-item">
+                      <div class="pairing-label">Discriminator</div>
+                      <div class="pairing-value mono" id="discriminator">--</div>
+                    </div>
+                  </div>
+                  <div class="pairing-hint">Use this code in your Matter controller app (Apple Home, Google Home, Alexa)</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Devices Tab -->
+        <div id="tab-devices" class="tab-content-pane" style="display:none">
+          <div class="content-header">
+            <h1>Devices</h1>
+            <span class="device-count-badge" id="devices-total"></span>
+          </div>
+
+          <div id="expose-alert" class="alert alert-warning filter-alert" style="display:none">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style="margin-right:8px;vertical-align:-2px">
+              <path d="M8 1L1 14h14L8 1z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+              <line x1="8" y1="6" x2="8" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <circle cx="8" cy="12.5" r="0.75" fill="currentColor"/>
+            </svg>
+            <strong>Restart required.</strong> Exposure changes take effect after restarting the bridge.
+          </div>
+
+          <div class="card mb-4">
+            <div class="card-body">
+              <div class="devices-toolbar">
+                <div class="search-wrapper">
+                  <svg class="search-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/>
+                    <line x1="11" y1="11" x2="14" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                  </svg>
+                  <input type="text" class="form-control search-input" id="device-search" placeholder="Search devices..." oninput="filterDeviceTable()">
+                </div>
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" id="hide-unnamed" checked onchange="filterDeviceTable()">
+                  <label class="form-check-label" for="hide-unnamed">Hide unnamed channels</label>
+                </div>
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" id="default-exposed" onchange="toggleDefaultExposed()">
+                  <label class="form-check-label" for="default-exposed">Expose new devices by default</label>
+                </div>
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" id="show-unmapped" onchange="toggleUnmapped()">
+                  <label class="form-check-label" for="show-unmapped">Show unmapped channels</label>
+                </div>
+              </div>
+
+              <div class="table-responsive">
+                <table class="table table-hover device-table" id="device-table">
+                  <thead>
+                    <tr>
+                      <th>Expose</th>
+                      <th>Name</th>
+                      <th>Address</th>
+                      <th>HM Type</th>
+                      <th>Matter Type</th>
+                      <th>Tilt</th>
+                      <th>Room</th>
+                      <th>State</th>
+                    </tr>
+                  </thead>
+                  <tbody id="device-tbody">
+                    <tr><td colspan="8" class="text-center text-body-secondary py-4">Loading devices...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- Unmapped Channels -->
+          <div id="unmapped-section" style="display:none">
+            <h2 class="section-subtitle">Unmapped Channels</h2>
+            <div class="card">
+              <div class="card-body">
+                <div class="table-responsive">
+                  <table class="table table-hover device-table">
+                    <thead>
+                      <tr>
+                        <th>Address</th>
+                        <th>Type</th>
+                        <th>Name</th>
+                        <th>Values</th>
+                      </tr>
+                    </thead>
+                    <tbody id="unmapped-tbody">
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Filter Config Tab -->
+        <div id="tab-filters" class="tab-content-pane" style="display:none">
+          <div class="content-header">
+            <h1>Filter Configuration</h1>
+          </div>
+
+          <div id="filter-alert" class="alert alert-warning filter-alert" style="display:none">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style="margin-right:8px;vertical-align:-2px">
+              <path d="M8 1L1 14h14L8 1z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+              <line x1="8" y1="6" x2="8" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <circle cx="8" cy="12.5" r="0.75" fill="currentColor"/>
+            </svg>
+            <strong>Restart required.</strong> Filter changes take effect after restarting the bridge.
+          </div>
+
+          <div class="card">
+            <div class="card-body">
+              <form id="filter-form" onsubmit="saveFilter(event)">
+                <div class="row g-4">
+                  <div class="col-md-6">
+                    <div class="mb-4">
+                      <label class="form-label filter-label">Rooms</label>
+                      <div class="filter-desc">Only bridge devices in these rooms (one per line, empty = all)</div>
+                      <textarea class="form-control mono filter-textarea" id="filter-rooms" rows="5"></textarea>
+                    </div>
+                    <div class="mb-4">
+                      <label class="form-label filter-label">Functions</label>
+                      <div class="filter-desc">Only bridge devices with these functions (one per line, empty = all)</div>
+                      <textarea class="form-control mono filter-textarea" id="filter-functions" rows="5"></textarea>
+                    </div>
+                  </div>
+                  <div class="col-md-6">
+                    <div class="mb-4">
+                      <label class="form-label filter-label">Include</label>
+                      <div class="filter-desc">Explicitly include these addresses (one per line)</div>
+                      <textarea class="form-control mono filter-textarea" id="filter-include" rows="5"></textarea>
+                    </div>
+                    <div class="mb-4">
+                      <label class="form-label filter-label">Exclude</label>
+                      <div class="filter-desc">Explicitly exclude these addresses (one per line)</div>
+                      <textarea class="form-control mono filter-textarea" id="filter-exclude" rows="5"></textarea>
+                    </div>
+                  </div>
+                </div>
+                <div class="filter-actions">
+                  <button type="submit" class="btn btn-primary save-btn">
+                    Save Configuration
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@coreui/coreui@5.3.1/dist/js/coreui.bundle.min.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

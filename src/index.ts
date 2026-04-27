@@ -5,6 +5,7 @@
  */
 
 import { MatterHomematicBridge } from './bridge/MatterBridge';
+import { WebServer } from './web/WebServer';
 import { initLogger, getLogger } from './utils/Logger';
 import * as fs from 'fs';
 
@@ -26,7 +27,20 @@ const DEFAULT_CONFIG = {
       "HmIP-RF": { enabled: true, port: 2010 },
       "VirtualDevices": { enabled: false, port: 9292 }
     },
-    callbackPort: 9875
+    callbackPort: 9875,
+    regaPort: 80,
+    // Actual credentials come from CCU_USER / CCU_PASSWORD env vars —
+    // never put real secrets here.
+    user: "",
+    password: ""
+  },
+  devices: {
+    defaultExposed: false,
+    exposed: {} as Record<string, boolean>
+  },
+  web: {
+    enabled: false,
+    port: 8080
   },
   logging: {
     level: "info",
@@ -120,24 +134,80 @@ async function main(): Promise<void> {
     config.bridge.passcode = parseInt(args.passcode, 10);
   }
 
+  // CCU WebUI credentials come from the environment — never put them in
+  // config.json so config files can be committed/shared safely.
+  if (process.env.CCU_USER) config.ccu.user = process.env.CCU_USER;
+  if (process.env.CCU_PASSWORD) config.ccu.password = process.env.CCU_PASSWORD;
+
   log.info(`CCU Host: ${config.ccu.host}`);
   log.info(`Matter Port: ${config.bridge.port}`);
 
-  // Create and start bridge
-  const bridge = new MatterHomematicBridge(config);
+  // Hold the bridge instance in a mutable ref so the Web UI can replace it
+  // during restart while the web server stays alive.
+  const bridgeRef: { bridge: MatterHomematicBridge } = {
+    bridge: new MatterHomematicBridge(config),
+  };
+  let webServer: WebServer | undefined;
 
   // Handle graceful shutdown
   const shutdown = async () => {
     log.info('Shutting down...');
-    await bridge.stop();
+    if (webServer) await webServer.stop();
+    await bridgeRef.bridge.stop();
     process.exit(0);
   };
 
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
+  // Log uncaught errors but keep the process alive so the web UI stays reachable
+  // (matter.js sometimes throws from deep async stacks during device add errors)
+  process.on('uncaughtException', (err) => {
+    log.error(`Uncaught exception: ${err.message}`);
+    log.error(err.stack || '');
+  });
+  process.on('unhandledRejection', (reason) => {
+    log.error(`Unhandled rejection: ${reason}`);
+  });
+
+  const restartBridge = async (): Promise<void> => {
+    log.info('Restarting bridge in-process...');
+    try {
+      await bridgeRef.bridge.stop();
+    } catch (err) {
+      log.error(`Error stopping bridge: ${err}`);
+    }
+    const freshConfig = loadConfig();
+    if (args.ccu) freshConfig.ccu.host = args.ccu;
+    if (args.port) freshConfig.bridge.port = parseInt(args.port, 10);
+    if (args.passcode) freshConfig.bridge.passcode = parseInt(args.passcode, 10);
+    bridgeRef.bridge = new MatterHomematicBridge(freshConfig);
+    await bridgeRef.bridge.start();
+    log.info('Bridge restarted.');
+  };
+
+  // Start web UI first (if enabled) so it stays available even if bridge startup fails
+  if (config.web?.enabled) {
+    const configPath = process.env.CONFIG_PATH || './config.json';
+    webServer = new WebServer(config.web.port || 8080, {
+      getDevices: () => bridgeRef.bridge.getDeviceMapper().getAllMappedDevices(),
+      getChannels: () => bridgeRef.bridge.getCcuConnector().getChannels(),
+      isCcuConnected: () => bridgeRef.bridge.getCcuConnector().isConnected(),
+      getMatterEndpointCount: () => bridgeRef.bridge.getMatterEndpointCount(),
+      getBridgeConfig: () => bridgeRef.bridge.getBridgeConfig(),
+      getCcuHost: () => bridgeRef.bridge.getCcuHost(),
+      configPath,
+      restartBridge,
+    });
+    try {
+      await webServer.start();
+    } catch (err) {
+      log.error(`Failed to start web server: ${err}`);
+    }
+  }
+
   try {
-    await bridge.start();
+    await bridgeRef.bridge.start();
   } catch (err) {
     log.error(`Failed to start bridge: ${err}`);
     process.exit(1);

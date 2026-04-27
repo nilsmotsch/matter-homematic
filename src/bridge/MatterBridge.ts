@@ -57,6 +57,19 @@ interface FullConfig {
       'VirtualDevices'?: { enabled: boolean; port: number };
     };
     callbackPort: number;
+    callbackHost?: string;
+    regaPort?: number;
+    user?: string;
+    password?: string;
+  };
+  devices?: {
+    defaultExposed?: boolean;
+    exposed?: Record<string, boolean>;
+    /** Per-address override for WindowCovering tilt. true = force venetian
+     *  (expose tilt), false = force lift-only (hide tilt). Absent = auto-
+     *  detect from LEVEL_2 value (works on HmIPW-DRBL4 but not HmIP-FBL,
+     *  which always reports LEVEL_2 numeric regardless of physical install). */
+    tilt?: Record<string, boolean>;
   };
 }
 
@@ -103,7 +116,8 @@ export class MatterHomematicBridge {
         deviceType,
         channel.name,
         channel.paramsets.VALUES || {},
-        channel.room
+        channel.room,
+        this.config.devices?.tilt?.[address]
       );
 
       if (mapped) {
@@ -183,25 +197,53 @@ export class MatterHomematicBridge {
   }
 
   /**
+   * Decide whether a given device should be exposed over Matter.
+   * Per-device toggle wins; falls back to defaultExposed (default: false —
+   * users opt in to each device they want visible in Matter).
+   */
+  private isDeviceExposed(address: string): boolean {
+    const cfg = this.config.devices;
+    if (cfg?.exposed && Object.prototype.hasOwnProperty.call(cfg.exposed, address)) {
+      return !!cfg.exposed[address];
+    }
+    return cfg?.defaultExposed ?? false;
+  }
+
+  /**
    * Add all mapped devices as bridged devices
    */
   private async addBridgedDevices(): Promise<void> {
     const mappedDevices = this.deviceMapper.getAllMappedDevices();
+    let skipped = 0;
 
     for (const [address, device] of mappedDevices) {
+      if (!this.isDeviceExposed(address)) {
+        skipped++;
+        getLogger().debug(`Skipping ${address} (${device.name}) — not exposed`);
+        continue;
+      }
+
+      let endpoint: Endpoint | null = null;
+      let added = false;
       try {
-        const endpoint = await this.createMatterEndpoint(device);
-        if (endpoint) {
-          await this.aggregator!.add(endpoint);
-          this.matterEndpoints.set(address, endpoint);
-          getLogger().info(`Added bridged device: ${device.name} (${device.matterDeviceType})`);
-        }
+        endpoint = await this.createMatterEndpoint(device);
+        if (!endpoint) continue;
+        await this.aggregator!.add(endpoint);
+        added = true;
+        this.matterEndpoints.set(address, endpoint);
+        getLogger().info(`Added bridged device: ${device.name} (${device.matterDeviceType})`);
       } catch (err) {
         getLogger().error(`Failed to add device ${address}:`, err);
+        // Only close endpoints that were successfully added; calling close()
+        // on a half-constructed endpoint re-throws "endpoint storage
+        // inaccessible" as an unhandled rejection.
+        if (added && endpoint) {
+          try { await endpoint.close(); } catch { /* ignore */ }
+        }
       }
     }
 
-    getLogger().info(`Added ${this.matterEndpoints.size} bridged devices`);
+    getLogger().info(`Added ${this.matterEndpoints.size} bridged devices (${skipped} not exposed)`);
   }
 
   /**
@@ -283,16 +325,19 @@ export class MatterHomematicBridge {
    * Create Dimmable device (dimmer/light)
    */
   private createDimmableDevice(id: string, device: MappedDevice, bridgedInfo: any): Endpoint {
+    // Matter LevelControl requires currentLevel in [minLevel, maxLevel].
+    // Raw HM LEVEL=0 maps to Matter 0 which is below minLevel=1, so clamp.
+    const initialLevel = device.currentState.currentLevel || 0;
     const endpoint = new Endpoint(
       DimmableLightDevice.with(BridgedDeviceBasicInformationServer),
       {
         id,
         bridgedDeviceBasicInformation: bridgedInfo,
         onOff: {
-          onOff: (device.currentState.currentLevel || 0) > 0
+          onOff: initialLevel > 0
         },
         levelControl: {
-          currentLevel: device.currentState.currentLevel || 0,
+          currentLevel: Math.max(1, Math.min(254, initialLevel || 1)),
           minLevel: 1,
           maxLevel: 254
         }
@@ -327,30 +372,88 @@ export class MatterHomematicBridge {
   }
 
   /**
-   * Create Window Covering device (blind/shutter)
+   * Create Window Covering device (blind/shutter).
+   *
+   * Venetian blinds (HmIP-FBL, some HmIPW-DRBL4 channels) report a numeric
+   * LEVEL_2 for slat tilt — DeviceMapper sets `device.hasTilt` for those.
+   * Roller shutters (LEVEL only) get the simpler Lift-only composition so
+   * Matter controllers don't render a non-functional tilt slider.
    */
   private createWindowCoveringDevice(id: string, device: MappedDevice, bridgedInfo: any): Endpoint {
+    const liftPos = device.currentState.currentPositionLiftPercent100ths || 0;
+
+    if (device.hasTilt) {
+      const tiltPos = device.currentState.currentPositionTiltPercent100ths || 0;
+      const endpoint = new Endpoint(
+        WindowCoveringDevice.with(
+          BridgedDeviceBasicInformationServer,
+          WindowCoveringServer.with("Lift", "Tilt", "PositionAwareLift", "PositionAwareTilt", "AbsolutePosition"),
+        ),
+        {
+          id,
+          bridgedDeviceBasicInformation: bridgedInfo,
+          windowCovering: {
+            type: 8, // TiltBlindLift (venetian)
+            currentPositionLiftPercent100ths: liftPos,
+            targetPositionLiftPercent100ths: liftPos,
+            currentPositionTiltPercent100ths: tiltPos,
+            targetPositionTiltPercent100ths: tiltPos,
+            operationalStatus: { global: 0, lift: 0, tilt: 0 },
+            endProductType: 5, // TiltOnlyInteriorBlind / venetian
+          },
+        },
+      );
+
+      endpoint.events.windowCovering.targetPositionLiftPercent100ths$Changed.on(async (value: any) => {
+        if (value !== null && value !== undefined) {
+          getLogger().info(`Matter -> CCU: ${device.hmAddress} LIFT = ${value}`);
+          const hmValue = this.deviceMapper.convertToHomematic(
+            device.hmAddress, 'windowCovering', 'currentPositionLiftPercent100ths', value,
+          );
+          if (hmValue) {
+            await this.ccuConnector.setValue(device.hmAddress, hmValue.key, hmValue.value);
+          }
+        }
+      });
+
+      endpoint.events.windowCovering.targetPositionTiltPercent100ths$Changed.on(async (value: any) => {
+        if (value !== null && value !== undefined) {
+          getLogger().info(`Matter -> CCU: ${device.hmAddress} TILT = ${value}`);
+          const hmValue = this.deviceMapper.convertToHomematic(
+            device.hmAddress, 'windowCovering', 'currentPositionTiltPercent100ths', value,
+          );
+          if (hmValue) {
+            await this.ccuConnector.setValue(device.hmAddress, hmValue.key, hmValue.value);
+          }
+        }
+      });
+
+      return endpoint;
+    }
+
     const endpoint = new Endpoint(
-      WindowCoveringDevice.with(BridgedDeviceBasicInformationServer, WindowCoveringServer.with("Lift", "PositionAwareLift", "AbsolutePosition")),
+      WindowCoveringDevice.with(
+        BridgedDeviceBasicInformationServer,
+        WindowCoveringServer.with("Lift", "PositionAwareLift", "AbsolutePosition"),
+      ),
       {
         id,
         bridgedDeviceBasicInformation: bridgedInfo,
         windowCovering: {
           type: 0, // Rollershade
-          currentPositionLiftPercent100ths: device.currentState.currentPositionLiftPercent100ths || 0,
-          targetPositionLiftPercent100ths: device.currentState.currentPositionLiftPercent100ths || 0,
+          currentPositionLiftPercent100ths: liftPos,
+          targetPositionLiftPercent100ths: liftPos,
           operationalStatus: { global: 0, lift: 0, tilt: 0 },
-          endProductType: 0 // Rollershade
-        }
-      }
+          endProductType: 0, // Rollershade
+        },
+      },
     );
 
-    // Handle position changes from Matter
     endpoint.events.windowCovering.targetPositionLiftPercent100ths$Changed.on(async (value: any) => {
       if (value !== null && value !== undefined) {
-        getLogger().info(`Matter -> CCU: ${device.hmAddress} POSITION = ${value}`);
+        getLogger().info(`Matter -> CCU: ${device.hmAddress} LIFT = ${value}`);
         const hmValue = this.deviceMapper.convertToHomematic(
-          device.hmAddress, 'windowCovering', 'currentPositionLiftPercent100ths', value
+          device.hmAddress, 'windowCovering', 'currentPositionLiftPercent100ths', value,
         );
         if (hmValue) {
           await this.ccuConnector.setValue(device.hmAddress, hmValue.key, hmValue.value);
@@ -418,8 +521,10 @@ export class MatterHomematicBridge {
    * Create Occupancy Sensor device
    */
   private createOccupancySensorDevice(id: string, device: MappedDevice, bridgedInfo: any): Endpoint {
+    // OccupancySensing requires at least one sensing-modality feature
+    // (PassiveInfrared, UltraSonic, PhysicalContact) in Matter 1.3+.
     return new Endpoint(
-      OccupancySensorDevice.with(BridgedDeviceBasicInformationServer, OccupancySensingServer),
+      OccupancySensorDevice.with(BridgedDeviceBasicInformationServer, OccupancySensingServer.with("PassiveInfrared")),
       {
         id,
         bridgedDeviceBasicInformation: bridgedInfo,
@@ -536,6 +641,26 @@ export class MatterHomematicBridge {
     getLogger().info('');
     getLogger().info(`Bridged Devices: ${this.matterEndpoints.size}`);
     getLogger().info('========================================\n');
+  }
+
+  getMatterEndpointCount(): number {
+    return this.matterEndpoints.size;
+  }
+
+  getDeviceMapper(): DeviceMapper {
+    return this.deviceMapper;
+  }
+
+  getCcuConnector(): CcuConnector {
+    return this.ccuConnector;
+  }
+
+  getBridgeConfig() {
+    return this.config.bridge;
+  }
+
+  getCcuHost(): string {
+    return this.config.ccu.host;
   }
 
   /**

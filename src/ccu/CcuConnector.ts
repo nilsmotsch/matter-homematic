@@ -39,6 +39,11 @@ interface CcuConfig {
   };
   callbackPort: number;
   callbackHost?: string;
+  regaPort?: number;
+  /** CCU WebUI credentials — only needed for tclrega.exe calls on CCUs
+   *  with authentication enabled. XML-RPC endpoints don't use auth. */
+  user?: string;
+  password?: string;
 }
 
 interface InterfaceClient {
@@ -194,13 +199,15 @@ export class CcuConnector extends EventEmitter {
         callback(null, results);
       });
 
-      server.on('listening', () => {
+      // xmlrpc's createServer exposes the underlying http.Server as .httpServer
+      // and 'listening' / 'error' are emitted on that, not on the xmlrpc server itself.
+      this.callbackServer = server.httpServer;
+      server.httpServer.on('listening', () => {
         getLogger().info(`Callback server listening on port ${this.config.callbackPort}`);
-        this.callbackServer = server.httpServer;
         resolve();
       });
 
-      server.on('error', (err: Error) => {
+      server.httpServer.on('error', (err: Error) => {
         getLogger().error('Callback server error:', err);
         reject(err);
       });
@@ -290,21 +297,135 @@ export class CcuConnector extends EventEmitter {
   }
 
   /**
-   * Fetch device names and room assignments from ReGa
+   * Fetch device names and room assignments via the CCU JSON-RPC API
+   * (`/api/homematic.cgi`), which is the only way modern CCU3 firmware
+   * exposes ReGa data to external clients — `tclrega.exe` requires ADMIN
+   * rights the non-interactive `WebUI login` user doesn't have.
+   *
+   * Requires `ccu.user` / `ccu.password` (sourced from `CCU_USER` /
+   * `CCU_PASSWORD` env vars). Without credentials or on any failure,
+   * logs a warning and leaves addresses as names.
    */
   private async fetchDeviceNames(): Promise<void> {
-    try {
-      // This would use the ReGa HSS script interface or JSON-RPC
-      // For now, we'll use a simplified approach
-      getLogger().info('Fetching device names from ReGa...');
-      
-      // In a full implementation, you would call the CCU's JSON-RPC API:
-      // POST http://ccu-host/api/homematic.cgi
-      // With appropriate ReGa HSS scripts to get names and rooms
-      
-    } catch (err) {
-      getLogger().error('Failed to fetch device names:', err);
+    if (!this.config.user) {
+      getLogger().info('No CCU credentials configured; skipping name/room lookup (set CCU_USER/CCU_PASSWORD env vars)');
+      return;
     }
+    getLogger().info('Fetching device names from CCU JSON-RPC...');
+
+    let sid: string;
+    try {
+      sid = await this.jsonRpcLogin();
+    } catch (err) {
+      getLogger().warn(`CCU login failed (${(err as Error).message}); falling back to addresses as names`);
+      return;
+    }
+
+    try {
+      const devices = await this.jsonRpc('Device.listAllDetail', { _session_id_: sid }) as any[];
+      const rooms = await this.jsonRpc('Room.getAll', { _session_id_: sid }) as any[];
+
+      // channelId → channel address (only for channels we've discovered via XML-RPC)
+      const idToAddress = new Map<string, string>();
+      let nameUpdates = 0;
+      for (const dev of devices || []) {
+        for (const ch of dev.channels || []) {
+          const address: string = ch.address;
+          idToAddress.set(String(ch.id), address);
+          const channel = this.channels.get(address);
+          if (!channel) continue;
+          if (ch.name && ch.name !== address) {
+            channel.name = ch.name;
+            nameUpdates++;
+          }
+        }
+      }
+
+      let roomUpdates = 0;
+      for (const room of rooms || []) {
+        for (const cid of room.channelIds || []) {
+          const address = idToAddress.get(String(cid));
+          if (!address) continue;
+          const channel = this.channels.get(address);
+          if (!channel) continue;
+          channel.room = room.name;
+          roomUpdates++;
+        }
+      }
+
+      getLogger().info(`Applied CCU names to ${nameUpdates} channels, rooms to ${roomUpdates} channels`);
+    } catch (err) {
+      getLogger().warn(`CCU name fetch failed (${(err as Error).message}); falling back to addresses as names`);
+    } finally {
+      try {
+        await this.jsonRpc('Session.logout', { _session_id_: sid });
+      } catch { /* best-effort */ }
+    }
+  }
+
+  /**
+   * Log in to the CCU JSON-RPC API and return a session id.
+   */
+  private async jsonRpcLogin(): Promise<string> {
+    const res = await this.jsonRpc('Session.login', {
+      username: this.config.user,
+      password: this.config.password ?? '',
+    });
+    if (typeof res !== 'string' || !res) {
+      throw new Error('Session.login did not return a session id');
+    }
+    return res;
+  }
+
+  /**
+   * Low-level JSON-RPC call against `/api/homematic.cgi`. Returns the
+   * `result` field or throws on transport / API errors.
+   */
+  private jsonRpc(method: string, params: Record<string, any>): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const port = this.config.regaPort ?? 80;
+      const payload = JSON.stringify({ version: '1.1', method, params });
+      const data = Buffer.from(payload, 'utf-8');
+      const req = http.request(
+        {
+          host: this.config.host,
+          port,
+          path: '/api/homematic.cgi',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': data.length,
+          },
+          timeout: 5000,
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => {
+            if (res.statusCode && res.statusCode >= 400) {
+              reject(new Error(`JSON-RPC HTTP ${res.statusCode}`));
+              return;
+            }
+            try {
+              const body = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+              if (body.error) {
+                reject(new Error(`${method}: ${body.error.message || JSON.stringify(body.error)}`));
+              } else {
+                resolve(body.result);
+              }
+            } catch (err) {
+              reject(new Error(`Invalid JSON response from ${method}: ${err}`));
+            }
+          });
+        }
+      );
+      req.on('error', reject);
+      req.on('timeout', () => {
+        req.destroy(new Error(`${method} timed out`));
+      });
+      req.write(data);
+      req.end();
+    });
   }
 
   /**

@@ -25,7 +25,8 @@
       }
     },
     "callbackPort": 9875,
-    "callbackHost": ""
+    "callbackHost": "",
+    "regaPort": 80
   },
   "devices": {
     "filter": {
@@ -34,7 +35,14 @@
       "include": [],
       "exclude": []
     },
+    "defaultExposed": false,
+    "exposed": {},
+    "tilt": {},
     "customMappings": []
+  },
+  "web": {
+    "enabled": false,
+    "port": 8080
   },
   "logging": {
     "level": "info",

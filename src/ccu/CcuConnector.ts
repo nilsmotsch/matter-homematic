@@ -69,10 +69,20 @@ export class CcuConnector extends EventEmitter {
   private channels: Map<string, HmChannel> = new Map();
   private connected: boolean = false;
   private pingIntervals: Map<string, ReturnType<typeof setInterval>> = new Map();
+  /** ReGa port that answered the last datapoint dump (avoids re-probing). */
+  private regaValuesPort?: number;
 
   constructor(config: CcuConfig) {
     super();
     this.config = config;
+  }
+
+  /**
+   * ReGa UriEncode() percent-escapes ISO-8859-1 bytes (%E4 = ä), which
+   * decodeURIComponent would reject as invalid UTF-8 — decode byte-wise.
+   */
+  private decodeRega(s: string): string {
+    return s.replace(/%([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
   }
 
   /**
@@ -314,6 +324,23 @@ export class CcuConnector extends EventEmitter {
     // Fetch names from ReGa (CCU logic layer)
     await this.fetchDeviceNames();
 
+    // HMServer's getParamset VALUES comes from its in-memory cache, which
+    // is empty after a CCU reboot until every device has reported again —
+    // getValue even faults with -5. ReGa keeps the last known datapoint
+    // values, so overlay them for initial state seeding (and tilt
+    // auto-detection, which needs LEVEL_2 before mapping).
+    const regaValues = await this.fetchDatapointValues();
+    if (regaValues) {
+      let seeded = 0;
+      for (const [address, values] of regaValues) {
+        const channel = this.channels.get(address);
+        if (!channel) continue;
+        channel.paramsets.VALUES = { ...values, ...(channel.paramsets.VALUES || {}) };
+        seeded++;
+      }
+      getLogger().info(`Seeded VALUES for ${seeded} channels from ReGa`);
+    }
+
     return this.channels;
   }
 
@@ -447,10 +474,7 @@ export class CcuConnector extends EventEmitter {
       '}' +
       'Write("]}");';
 
-    // ReGa UriEncode() percent-escapes ISO-8859-1 bytes (%E4 = ä), which
-    // decodeURIComponent would reject as invalid UTF-8 — decode byte-wise.
-    const decodeRega = (s: string): string =>
-      s.replace(/%([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+    const decodeRega = (s: string): string => this.decodeRega(s);
 
     // Port 8181 is ReGa's own HTTP port (no auth layer); fall back to the
     // WebUI port, which also proxies tclrega.exe on older/unlocked setups.
@@ -493,6 +517,81 @@ export class CcuConnector extends EventEmitter {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Dump all datapoint values from ReGa in one script. Returns a map of
+   * channel address → { KEY: value } for every discovered channel, or
+   * null when no ReGa endpoint is reachable (e.g. pydevccu).
+   *
+   * This is the only reliable bulk state source on real CCU3 firmware:
+   * XML-RPC getParamset VALUES answers from HMServer's in-memory cache
+   * (empty struct after a CCU reboot) and getValue faults with -5 until a
+   * device has reported. ReGa persists the last known values.
+   *
+   * Entries whose timestamp is the 1970 epoch have never been reported
+   * and are skipped. Empty-string values with a real timestamp are kept —
+   * they are meaningful (e.g. DRBL4 LEVEL_2 = "" in roller mode).
+   */
+  async fetchDatapointValues(): Promise<Map<string, Record<string, any>> | null> {
+    const script =
+      'string id; boolean f = true;' +
+      'Write("{");' +
+      'foreach (id, dom.GetObject(ID_DATAPOINTS).EnumIDs()) {' +
+      '  object dp = dom.GetObject(id);' +
+      '  if (dp) {' +
+      '    string sv = "" # dp.Value();' +
+      '    string st = "" # dp.Timestamp();' +
+      '    if (f) { f = false; } else { Write(","); }' +
+      '    Write("\\"" # dp.Name().UriEncode() # "\\":[\\"" # sv.UriEncode() # "\\",\\"" # st # "\\"]");' +
+      '  }' +
+      '}' +
+      'Write("}");';
+
+    // ReGa stringifies values: booleans as true/false, numbers with
+    // trailing zeros. Convert back to the types the value converters and
+    // tilt auto-detection expect ('' stays '').
+    const coerce = (s: string): any => {
+      if (s === 'true') return true;
+      if (s === 'false') return false;
+      if (s !== '' && !isNaN(Number(s))) return Number(s);
+      return s;
+    };
+
+    const ports = this.regaValuesPort !== undefined
+      ? [this.regaValuesPort]
+      : [8181, this.config.regaPort ?? 80];
+    for (const port of ports) {
+      let parsed: Record<string, [string, string]>;
+      try {
+        const raw = await this.regaScript(script, port);
+        parsed = JSON.parse(raw);
+      } catch {
+        continue;
+      }
+
+      const result = new Map<string, Record<string, any>>();
+      for (const [encodedName, entry] of Object.entries(parsed)) {
+        if (!Array.isArray(entry) || typeof entry[1] !== 'string' || entry[1].startsWith('1970')) continue;
+        // Datapoint names are "<Interface>.<Address>.<KEY>"
+        const name = this.decodeRega(encodedName);
+        const firstDot = name.indexOf('.');
+        const lastDot = name.lastIndexOf('.');
+        if (firstDot < 0 || lastDot <= firstDot) continue;
+        const address = name.slice(firstDot + 1, lastDot);
+        if (!this.channels.has(address)) continue;
+        const key = name.slice(lastDot + 1);
+        let values = result.get(address);
+        if (!values) {
+          values = {};
+          result.set(address, values);
+        }
+        values[key] = coerce(this.decodeRega(entry[0]));
+      }
+      this.regaValuesPort = port;
+      return result;
+    }
+    return null;
   }
 
   /**

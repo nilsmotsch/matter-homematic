@@ -84,6 +84,11 @@ export class MatterHomematicBridge {
   /** *_TRANSMITTER state channel → the mapped *_VIRTUAL_RECEIVER addresses
    *  whose Matter endpoints mirror it (see findStateSourceChannel). */
   private stateSources: Map<string, string[]> = new Map();
+  /** HM value keys whose authoritative copy lives on the transmitter. */
+  private static readonly MIRRORED_KEYS = ['LEVEL', 'LEVEL_2', 'STATE'];
+  /** Receiver addresses that have a transmitter state source. Their own
+   *  MIRRORED_KEYS events are stale command echoes and must be ignored. */
+  private mirroredReceivers: Set<string> = new Set();
   private resyncTimer?: NodeJS.Timeout;
 
   constructor(config: FullConfig) {
@@ -135,12 +140,18 @@ export class MatterHomematicBridge {
       if (stateSource) {
         const txValues = channels.get(stateSource)?.paramsets.VALUES || {};
         values = { ...values };
-        for (const key of ['LEVEL', 'LEVEL_2', 'STATE']) {
-          if (txValues[key] !== undefined) values[key] = txValues[key];
+        for (const key of MatterHomematicBridge.MIRRORED_KEYS) {
+          // '' = transmitter mid-movement ("value unknown") — keep the
+          // receiver's value so tilt auto-detect and position seeding
+          // aren't poisoned by a blind that happens to be moving now.
+          if (txValues[key] !== undefined && txValues[key] !== '') {
+            values[key] = txValues[key];
+          }
         }
         const targets = this.stateSources.get(stateSource) ?? [];
         targets.push(address);
         this.stateSources.set(stateSource, targets);
+        this.mirroredReceivers.add(address);
       }
 
       const mapped = this.deviceMapper.mapChannel(
@@ -451,6 +462,9 @@ export class MatterHomematicBridge {
           // value into currentState before setting the attribute) — don't
           // bounce it back to the CCU.
           if (device.currentState.targetPositionLiftPercent100ths === value) return;
+          // Remember the commanded lift so a tilt command that follows
+          // pairs LEVEL with the newest target, not a stale position.
+          device.currentState.targetPositionLiftPercent100ths = value;
           getLogger().info(`Matter -> CCU: ${device.hmAddress} LIFT = ${value}`);
           const hmValue = this.deviceMapper.convertToHomematic(
             device.hmAddress, 'windowCovering', 'currentPositionLiftPercent100ths', value,
@@ -464,12 +478,29 @@ export class MatterHomematicBridge {
       endpoint.events.windowCovering.targetPositionTiltPercent100ths$Changed.on(async (value: any) => {
         if (value !== null && value !== undefined) {
           if (device.currentState.targetPositionTiltPercent100ths === value) return;
+          device.currentState.targetPositionTiltPercent100ths = value;
           getLogger().info(`Matter -> CCU: ${device.hmAddress} TILT = ${value}`);
           const hmValue = this.deviceMapper.convertToHomematic(
             device.hmAddress, 'windowCovering', 'currentPositionTiltPercent100ths', value,
           );
           if (hmValue) {
             await this.ccuConnector.setValue(device.hmAddress, hmValue.key, hmValue.value);
+            // HmIP blind actuators latch LEVEL_2 and only execute it when
+            // LEVEL is written afterwards — a lone LEVEL_2 write does
+            // nothing. Re-send the current/last-commanded lift to trigger
+            // the slat move without changing blind height.
+            const liftMatter = device.currentState.targetPositionLiftPercent100ths
+              ?? device.currentState.currentPositionLiftPercent100ths;
+            const liftHm = liftMatter !== undefined && liftMatter !== null
+              ? this.deviceMapper.convertToHomematic(
+                  device.hmAddress, 'windowCovering', 'currentPositionLiftPercent100ths', liftMatter,
+                )
+              : null;
+            const liftValue = liftHm
+              ? liftHm.value
+              : await this.ccuConnector.getValue(device.hmAddress, 'LEVEL');
+            getLogger().info(`Matter -> CCU: ${device.hmAddress} LEVEL = ${liftValue} (tilt commit)`);
+            await this.ccuConnector.setValue(device.hmAddress, 'LEVEL', liftValue);
           }
         }
       });
@@ -498,6 +529,7 @@ export class MatterHomematicBridge {
     endpoint.events.windowCovering.targetPositionLiftPercent100ths$Changed.on(async (value: any) => {
       if (value !== null && value !== undefined) {
         if (device.currentState.targetPositionLiftPercent100ths === value) return;
+        device.currentState.targetPositionLiftPercent100ths = value;
         getLogger().info(`Matter -> CCU: ${device.hmAddress} LIFT = ${value}`);
         const hmValue = this.deviceMapper.convertToHomematic(
           device.hmAddress, 'windowCovering', 'currentPositionLiftPercent100ths', value,
@@ -576,7 +608,7 @@ export class MatterHomematicBridge {
         id,
         bridgedDeviceBasicInformation: bridgedInfo,
         occupancySensing: {
-          occupancy: { occupied: device.currentState.occupancy ? true : false },
+          occupancy: device.currentState.occupancy ?? { occupied: false },
           occupancySensorType: 0, // PIR
           occupancySensorTypeBitmap: { pir: true }
         }
@@ -668,6 +700,15 @@ export class MatterHomematicBridge {
     this.ccuConnector.on('deviceEvent', async (event) => {
       const { address, key, value } = event;
 
+      // A mapped receiver's own LEVEL/LEVEL_2/STATE events are stale
+      // echoes of commands sent through that receiver — the transmitter
+      // is authoritative for those keys. Letting them through makes them
+      // fight the transmitter events (flip-flopping state) and leaks
+      // ghost commands back to the CCU.
+      if (this.mirroredReceivers.has(address) && MatterHomematicBridge.MIRRORED_KEYS.includes(key)) {
+        return;
+      }
+
       // Events on a *_TRANSMITTER state channel belong to the mapped
       // receiver endpoints that mirror it; everything else applies to the
       // channel's own endpoint.
@@ -689,6 +730,11 @@ export class MatterHomematicBridge {
    * events and keeps the periodic resync quiet).
    */
   private async applyCcuUpdate(target: string, key: string, value: any, source: string): Promise<void> {
+    // HmIP transmitters report '' for LEVEL/LEVEL_2 while the actuator is
+    // moving ("value unknown"). The converters would coerce '' to a real
+    // position (e.g. fully closed) — drop it and wait for the settled value.
+    if (value === '') return;
+
     const matterValue = this.deviceMapper.convertToMatter(target, key, value);
     if (!matterValue) return;
 
@@ -697,7 +743,12 @@ export class MatterHomematicBridge {
     // commands (echo suppression).
     const mappedDevice = this.deviceMapper.getMappedDevice(target);
     if (mappedDevice) {
-      if (mappedDevice.currentState[matterValue.attribute] === matterValue.value) return;
+      // Bitmap attributes (e.g. occupancy) are objects — compare structurally.
+      const previous = mappedDevice.currentState[matterValue.attribute];
+      const unchanged = typeof matterValue.value === 'object' && matterValue.value !== null
+        ? JSON.stringify(previous) === JSON.stringify(matterValue.value)
+        : previous === matterValue.value;
+      if (unchanged) return;
       mappedDevice.currentState[matterValue.attribute] = matterValue.value;
     }
 
@@ -740,9 +791,14 @@ export class MatterHomematicBridge {
       for (const [src, targets] of this.stateSources) {
         for (const t of targets) sourceOf.set(t, src);
       }
+      // One ReGa bulk dump covers all endpoints; getParamset only answers
+      // from HMServer's cache (empty after a CCU reboot), so it's the
+      // fallback, not the primary source.
+      const regaValues = await this.ccuConnector.fetchDatapointValues();
       for (const address of this.matterEndpoints.keys()) {
         const stateAddress = sourceOf.get(address) ?? address;
-        const values = await this.ccuConnector.readValues(stateAddress);
+        const values = regaValues?.get(stateAddress)
+          ?? await this.ccuConnector.readValues(stateAddress);
         if (!values) continue;
         for (const [key, value] of Object.entries(values)) {
           await this.applyCcuUpdate(address, key, value, `resync:${stateAddress}`);

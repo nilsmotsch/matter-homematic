@@ -257,8 +257,9 @@ const CHANNEL_TYPE_MAPPINGS: Record<string, DeviceTypeMapping> = {
         hmKey: 'MOTION',
         matterCluster: 'occupancySensing',
         matterAttribute: 'occupancy',
-        toMatter: (v) => v ? 1 : 0,  // Matter uses bitmap
-        toHomematic: (v) => Boolean(v)
+        // matter.js bitmap attributes reject plain numbers
+        toMatter: (v) => ({ occupied: Boolean(v) }),
+        toHomematic: (v) => Boolean(v?.occupied ?? v)
       }
     }
   },
@@ -270,8 +271,8 @@ const CHANNEL_TYPE_MAPPINGS: Record<string, DeviceTypeMapping> = {
         hmKey: 'MOTION',
         matterCluster: 'occupancySensing',
         matterAttribute: 'occupancy',
-        toMatter: (v) => v ? 1 : 0,
-        toHomematic: (v) => Boolean(v)
+        toMatter: (v) => ({ occupied: Boolean(v) }),
+        toHomematic: (v) => Boolean(v?.occupied ?? v)
       }
     }
   },
@@ -285,8 +286,8 @@ const CHANNEL_TYPE_MAPPINGS: Record<string, DeviceTypeMapping> = {
         hmKey: 'PRESENCE_DETECTION_STATE',
         matterCluster: 'occupancySensing',
         matterAttribute: 'occupancy',
-        toMatter: (v) => v ? 1 : 0,
-        toHomematic: (v) => Boolean(v)
+        toMatter: (v) => ({ occupied: Boolean(v) }),
+        toHomematic: (v) => Boolean(v?.occupied ?? v)
       }
     }
   },
@@ -491,11 +492,14 @@ export class DeviceMapper {
       hasTilt: hasTilt ? true : undefined,
     };
 
-    // Convert current values to Matter format
+    // Convert current values to Matter format. '' means "value unknown"
+    // (HmIP transmitters report it while the actuator is moving) — leave
+    // the attribute unseeded rather than coercing '' to a real position.
     for (const [, valueMapping] of Object.entries(valueMappings)) {
-      if (currentValues && currentValues[valueMapping.hmKey] !== undefined) {
+      const raw = currentValues?.[valueMapping.hmKey];
+      if (raw !== undefined && raw !== '') {
         mappedDevice.currentState[valueMapping.matterAttribute] =
-          valueMapping.toMatter(currentValues[valueMapping.hmKey]);
+          valueMapping.toMatter(raw);
       }
     }
 

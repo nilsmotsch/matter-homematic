@@ -228,6 +228,17 @@ describe('DeviceMapper', () => {
           expect(result!.hasTilt).toBe(true);
         });
       });
+
+      it("does not seed currentState from '' (transmitter mid-movement reports value unknown)", () => {
+        // tiltOverride=true keeps the LEVEL_2 mapping despite the '' value
+        const result = mapper.mapChannel(
+          'MOVING:14', 'BLIND_VIRTUAL_RECEIVER', 'HmIPW-DRBL4', 'Moving blind',
+          { LEVEL: '', LEVEL_2: '' }, undefined, true,
+        );
+        // '' must not be coerced to a position (1-'' would yield 10000 = closed)
+        expect(result!.currentState.currentPositionLiftPercent100ths).toBeUndefined();
+        expect(result!.currentState.currentPositionTiltPercent100ths).toBeUndefined();
+      });
     });
 
     describe('contact sensor - INVERTED (HM true=open <-> Matter false=contact)', () => {
@@ -269,6 +280,28 @@ describe('DeviceMapper', () => {
       it('converts Matter locked to HM locked', () => {
         const result = mapper.convertToHomematic('ADDR:1', 'doorLock', 'lockState', 1);
         expect(result!.value).toBe(false);
+      });
+    });
+
+    describe('occupancy (bitmap object, NOT a plain number — matter.js rejects numbers)', () => {
+      beforeEach(() => {
+        mapper.mapChannel('SPI:1', 'PRESENCEDETECTOR_TRANSCEIVER', 'HmIP-SPI', 'Presence', { PRESENCE_DETECTION_STATE: false });
+        mapper.mapChannel('SMI:1', 'MOTIONDETECTOR_TRANSCEIVER', 'HmIP-SMI', 'Motion', { MOTION: false });
+      });
+
+      it('converts HM presence true to Matter { occupied: true }', () => {
+        const result = mapper.convertToMatter('SPI:1', 'PRESENCE_DETECTION_STATE', true);
+        expect(result!.value).toEqual({ occupied: true });
+      });
+
+      it('converts HM presence false to Matter { occupied: false }', () => {
+        const result = mapper.convertToMatter('SPI:1', 'PRESENCE_DETECTION_STATE', false);
+        expect(result!.value).toEqual({ occupied: false });
+      });
+
+      it('converts HM motion to Matter bitmap object', () => {
+        const result = mapper.convertToMatter('SMI:1', 'MOTION', true);
+        expect(result!.value).toEqual({ occupied: true });
       });
     });
   });

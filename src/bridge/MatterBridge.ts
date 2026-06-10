@@ -9,6 +9,7 @@ import {
   Endpoint,
   Environment,
   StorageService,
+  Logger,
 } from "@matter/main";
 
 import {
@@ -32,8 +33,8 @@ import {
   ThermostatServer,
   OccupancySensingServer,
 } from "@matter/main/behaviors";
-import { VendorId } from "@matter/main/types";
-import { CcuConnector } from '../ccu/CcuConnector';
+import { VendorId, QrCode } from "@matter/main/types";
+import { CcuConnector, HmChannel } from '../ccu/CcuConnector';
 import { DeviceMapper, MappedDevice, MatterDeviceType } from '../devices/DeviceMapper';
 import { getLogger } from '../utils/Logger';
 
@@ -80,11 +81,24 @@ export class MatterHomematicBridge {
   private serverNode?: ServerNode;
   private aggregator?: Endpoint;
   private matterEndpoints: Map<string, Endpoint> = new Map();
+  /** *_TRANSMITTER state channel → the mapped *_VIRTUAL_RECEIVER addresses
+   *  whose Matter endpoints mirror it (see findStateSourceChannel). */
+  private stateSources: Map<string, string[]> = new Map();
+  private resyncTimer?: NodeJS.Timeout;
 
   constructor(config: FullConfig) {
     this.config = config;
     this.ccuConnector = new CcuConnector(config.ccu);
     this.deviceMapper = new DeviceMapper();
+
+    // matter.js logs at debug by default, which floods the log file and
+    // drowns out the bridge's own entries. Must be set before any matter.js
+    // activity — the Environment applies its logging vars only at
+    // construction, so `vars.set("log.level", …)` later has no effect.
+    Logger.level = "info";
+    // matter.js always emits ANSI colors, even when stdout is a file (the
+    // daemonized addon redirects it into the log).
+    Logger.format = process.stdout.isTTY ? "ansi" : "plain";
   }
 
   /**
@@ -110,12 +124,31 @@ export class MatterHomematicBridge {
       const parentDevice = devices.get(parentAddress);
       const deviceType = parentDevice?.type || 'Unknown';
 
+      // HmIP actuators report physical state on the channel group's
+      // *_TRANSMITTER channel; the *_VIRTUAL_RECEIVER we map only echoes
+      // commands sent through it (so it goes stale when the device is
+      // operated from the CCU UI, a wall button, or another receiver).
+      // Seed initial state from the transmitter and remember it as the
+      // live state source for events.
+      let values = channel.paramsets.VALUES || {};
+      const stateSource = this.findStateSourceChannel(address, channel.type, channels);
+      if (stateSource) {
+        const txValues = channels.get(stateSource)?.paramsets.VALUES || {};
+        values = { ...values };
+        for (const key of ['LEVEL', 'LEVEL_2', 'STATE']) {
+          if (txValues[key] !== undefined) values[key] = txValues[key];
+        }
+        const targets = this.stateSources.get(stateSource) ?? [];
+        targets.push(address);
+        this.stateSources.set(stateSource, targets);
+      }
+
       const mapped = this.deviceMapper.mapChannel(
         address,
         channel.type,
         deviceType,
         channel.name,
-        channel.paramsets.VALUES || {},
+        values,
         channel.room,
         this.config.devices?.tilt?.[address]
       );
@@ -135,6 +168,7 @@ export class MatterHomematicBridge {
 
     // Setup event handlers
     this.setupEventHandlers();
+    this.startStateResync();
 
     // Start the server
     await this.serverNode!.start();
@@ -149,9 +183,14 @@ export class MatterHomematicBridge {
   private async createMatterServer(): Promise<void> {
     const environment = Environment.default;
 
-    // Configure storage
+    // Point matter.js storage at the configured path. Without this it
+    // defaults to $HOME/.matter, which doesn't exist for the CCU daemon
+    // (and silently ignores config.bridge.storagePath).
+    if (this.config.bridge.storagePath) {
+      environment.vars.set("storage.path", this.config.bridge.storagePath);
+    }
+
     const storageService = environment.get(StorageService);
-    // Storage will be at the configured path
 
     this.serverNode = await ServerNode.create({
       id: "matter-homematic",
@@ -309,6 +348,8 @@ export class MatterHomematicBridge {
 
     // Handle state changes from Matter
     endpoint.events.onOff.onOff$Changed.on(async (value) => {
+      // Echo from a CCU-originated update — don't bounce it back.
+      if (device.currentState.onOff === value) return;
       getLogger().info(`Matter -> CCU: ${device.hmAddress} STATE = ${value}`);
       const hmValue = this.deviceMapper.convertToHomematic(
         device.hmAddress, 'onOff', 'onOff', value
@@ -406,6 +447,10 @@ export class MatterHomematicBridge {
 
       endpoint.events.windowCovering.targetPositionLiftPercent100ths$Changed.on(async (value: any) => {
         if (value !== null && value !== undefined) {
+          // Echo from a CCU-originated update (deviceEvent wrote this
+          // value into currentState before setting the attribute) — don't
+          // bounce it back to the CCU.
+          if (device.currentState.targetPositionLiftPercent100ths === value) return;
           getLogger().info(`Matter -> CCU: ${device.hmAddress} LIFT = ${value}`);
           const hmValue = this.deviceMapper.convertToHomematic(
             device.hmAddress, 'windowCovering', 'currentPositionLiftPercent100ths', value,
@@ -418,6 +463,7 @@ export class MatterHomematicBridge {
 
       endpoint.events.windowCovering.targetPositionTiltPercent100ths$Changed.on(async (value: any) => {
         if (value !== null && value !== undefined) {
+          if (device.currentState.targetPositionTiltPercent100ths === value) return;
           getLogger().info(`Matter -> CCU: ${device.hmAddress} TILT = ${value}`);
           const hmValue = this.deviceMapper.convertToHomematic(
             device.hmAddress, 'windowCovering', 'currentPositionTiltPercent100ths', value,
@@ -451,6 +497,7 @@ export class MatterHomematicBridge {
 
     endpoint.events.windowCovering.targetPositionLiftPercent100ths$Changed.on(async (value: any) => {
       if (value !== null && value !== undefined) {
+        if (device.currentState.targetPositionLiftPercent100ths === value) return;
         getLogger().info(`Matter -> CCU: ${device.hmAddress} LIFT = ${value}`);
         const hmValue = this.deviceMapper.convertToHomematic(
           device.hmAddress, 'windowCovering', 'currentPositionLiftPercent100ths', value,
@@ -591,29 +638,42 @@ export class MatterHomematicBridge {
   }
 
   /**
+   * For a `*_VIRTUAL_RECEIVER` channel, find the `*_TRANSMITTER` channel of
+   * the same HmIP channel group (e.g. DRBL4 `:14/:15/:16` → `:13`, FBL
+   * `:4/:5/:6` → `:3`). Walks channel numbers downward through the group's
+   * sibling receivers until the transmitter is hit.
+   */
+  private findStateSourceChannel(
+    address: string,
+    channelType: string,
+    channels: Map<string, HmChannel>
+  ): string | undefined {
+    const suffix = '_VIRTUAL_RECEIVER';
+    if (!channelType || !channelType.endsWith(suffix)) return undefined;
+    const txType = channelType.slice(0, -suffix.length) + '_TRANSMITTER';
+    const [parent, chStr] = address.split(':');
+    for (let ch = parseInt(chStr, 10) - 1; ch >= 0; ch--) {
+      const candidate = channels.get(`${parent}:${ch}`);
+      if (!candidate) return undefined;
+      if (candidate.type === txType) return `${parent}:${ch}`;
+      if (candidate.type !== channelType) return undefined; // left the group
+    }
+    return undefined;
+  }
+
+  /**
    * Setup event handlers for CCU -> Matter updates
    */
   private setupEventHandlers(): void {
     this.ccuConnector.on('deviceEvent', async (event) => {
       const { address, key, value } = event;
-      
-      const matterValue = this.deviceMapper.convertToMatter(address, key, value);
-      if (!matterValue) return;
 
-      const endpoint = this.matterEndpoints.get(address);
-      if (!endpoint) return;
-
-      getLogger().info(`CCU -> Matter: ${address} ${key}=${value} -> ${matterValue.cluster}.${matterValue.attribute}=${matterValue.value}`);
-
-      try {
-        // Update Matter endpoint state
-        const state: any = {};
-        state[matterValue.cluster] = {};
-        state[matterValue.cluster][matterValue.attribute] = matterValue.value;
-        
-        await endpoint.set(state);
-      } catch (err) {
-        getLogger().error(`Failed to update Matter endpoint:`, err);
+      // Events on a *_TRANSMITTER state channel belong to the mapped
+      // receiver endpoints that mirror it; everything else applies to the
+      // channel's own endpoint.
+      const targets = this.stateSources.get(address) ?? [address];
+      for (const target of targets) {
+        await this.applyCcuUpdate(target, key, value, address);
       }
     });
 
@@ -621,6 +681,74 @@ export class MatterHomematicBridge {
       getLogger().error(`Lost connection to CCU interface: ${interfaceName}`);
       // Could implement reconnection logic here
     });
+  }
+
+  /**
+   * Apply one CCU value to the mapped device + Matter endpoint of
+   * `target`. No-op when the value already matches (deduplicates repeated
+   * events and keeps the periodic resync quiet).
+   */
+  private async applyCcuUpdate(target: string, key: string, value: any, source: string): Promise<void> {
+    const matterValue = this.deviceMapper.convertToMatter(target, key, value);
+    if (!matterValue) return;
+
+    // Track state on the mapped device: keeps the web UI fresh and lets
+    // the $Changed handlers tell external updates from real Matter
+    // commands (echo suppression).
+    const mappedDevice = this.deviceMapper.getMappedDevice(target);
+    if (mappedDevice) {
+      if (mappedDevice.currentState[matterValue.attribute] === matterValue.value) return;
+      mappedDevice.currentState[matterValue.attribute] = matterValue.value;
+    }
+
+    const endpoint = this.matterEndpoints.get(target);
+    if (!endpoint) return;
+
+    getLogger().info(`CCU -> Matter: ${source} ${key}=${value} -> ${target} ${matterValue.cluster}.${matterValue.attribute}=${matterValue.value}`);
+
+    try {
+      const state: any = {};
+      state[matterValue.cluster] = {};
+      state[matterValue.cluster][matterValue.attribute] = matterValue.value;
+
+      // External position changes move target along with current so
+      // controllers don't render a perpetual "opening/closing…". The
+      // $Changed echo this triggers is suppressed via currentState.
+      if (matterValue.cluster === 'windowCovering' && matterValue.attribute.startsWith('currentPosition')) {
+        const targetAttribute = matterValue.attribute.replace('currentPosition', 'targetPosition');
+        state.windowCovering[targetAttribute] = matterValue.value;
+        if (mappedDevice) {
+          mappedDevice.currentState[targetAttribute] = matterValue.value;
+        }
+      }
+
+      await endpoint.set(state);
+    } catch (err) {
+      getLogger().error(`Failed to update Matter endpoint:`, err);
+    }
+  }
+
+  /**
+   * Periodically re-read the authoritative state channels of all exposed
+   * endpoints from the CCU. Events cover the live path; this closes the
+   * gaps (missed callbacks, bridge restarts, CCU interface hiccups).
+   */
+  private startStateResync(): void {
+    const RESYNC_MS = 5 * 60 * 1000;
+    this.resyncTimer = setInterval(async () => {
+      const sourceOf = new Map<string, string>();
+      for (const [src, targets] of this.stateSources) {
+        for (const t of targets) sourceOf.set(t, src);
+      }
+      for (const address of this.matterEndpoints.keys()) {
+        const stateAddress = sourceOf.get(address) ?? address;
+        const values = await this.ccuConnector.readValues(stateAddress);
+        if (!values) continue;
+        for (const [key, value] of Object.entries(values)) {
+          await this.applyCcuUpdate(address, key, value, `resync:${stateAddress}`);
+        }
+      }
+    }, RESYNC_MS);
   }
 
   /**
@@ -647,6 +775,67 @@ export class MatterHomematicBridge {
     return this.matterEndpoints.size;
   }
 
+  /**
+   * Pairing codes for the web UI. `qrAscii` is matter.js's terminal QR
+   * rendering (half-block chars); braille blanks are swapped for plain
+   * spaces so browsers render it scannable in a tight monospace <pre>.
+   */
+  getPairingInfo(): {
+    manualPairingCode: string;
+    qrPairingCode: string;
+    qrAscii: string;
+    commissioned: boolean;
+  } | null {
+    const commissioning = (this.serverNode as any)?.state?.commissioning;
+    if (!commissioning?.pairingCodes) return null;
+    const { manualPairingCode, qrPairingCode } = commissioning.pairingCodes;
+    return {
+      manualPairingCode,
+      qrPairingCode,
+      qrAscii: QrCode.get(qrPairingCode).replace(/⠀/g, ' ').trimEnd(),
+      commissioned: !!commissioning.commissioned,
+    };
+  }
+
+  /**
+   * Add or remove a single bridged endpoint at runtime (web UI toggle) —
+   * matter.js supports dynamic topology changes on a live aggregator, so
+   * no bridge restart is needed. Also patches the in-memory config so
+   * isDeviceExposed() stays consistent with what's on disk.
+   * Returns true when the live topology actually changed.
+   */
+  async setDeviceExposed(address: string, exposed: boolean): Promise<boolean> {
+    if (this.config.devices) {
+      if (!this.config.devices.exposed) this.config.devices.exposed = {};
+      this.config.devices.exposed[address] = exposed;
+    }
+    if (!this.aggregator) return false;
+
+    const existing = this.matterEndpoints.get(address);
+    if (exposed) {
+      if (existing) return false;
+      const device = this.deviceMapper.getMappedDevice(address);
+      if (!device) {
+        getLogger().warn(`Cannot expose ${address}: not a mapped device`);
+        return false;
+      }
+      const endpoint = await this.createMatterEndpoint(device);
+      if (!endpoint) return false;
+      await this.aggregator.add(endpoint);
+      this.matterEndpoints.set(address, endpoint);
+      getLogger().info(`Added bridged device at runtime: ${device.name} (${device.matterDeviceType})`);
+      return true;
+    }
+
+    if (!existing) return false;
+    this.matterEndpoints.delete(address);
+    // delete() removes the endpoint from the aggregator and erases its
+    // persisted state (a later re-expose starts clean).
+    await existing.delete();
+    getLogger().info(`Removed bridged device at runtime: ${address}`);
+    return true;
+  }
+
   getDeviceMapper(): DeviceMapper {
     return this.deviceMapper;
   }
@@ -668,6 +857,11 @@ export class MatterHomematicBridge {
    */
   async stop(): Promise<void> {
     getLogger().info('Stopping Matter-Homematic Bridge...');
+
+    if (this.resyncTimer) {
+      clearInterval(this.resyncTimer);
+      this.resyncTimer = undefined;
+    }
 
     if (this.serverNode) {
       await this.serverNode.close();

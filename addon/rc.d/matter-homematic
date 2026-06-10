@@ -1,0 +1,108 @@
+#!/bin/sh
+ADDON_NAME=matter-homematic
+ADDON_DIR=/usr/local/addons/${ADDON_NAME}
+CONFIG_DIR=/usr/local/etc/config
+ADDONCFG_DIR=${CONFIG_DIR}/addons/${ADDON_NAME}
+PIDFILE=/var/run/${ADDON_NAME}.pid
+LOGFILE=${ADDONCFG_DIR}/${ADDON_NAME}.log
+VER=$(cat ${ADDON_DIR}/VERSION 2>/dev/null || echo "0.0.0")
+
+# Make config + Matter fabric live in the persistent config dir (survives
+# firmware/addon updates which wipe ${ADDON_DIR}).
+export MATTER_HOMEMATIC_DATA_DIR=${ADDONCFG_DIR}
+
+# matter.js logs at debug by default — that floods the log file and makes
+# the web UI log viewer useless.
+export MATTER_LOG_LEVEL=info
+
+# Bundled Node 18 (armv6l build — runs on CCU3's armv7l/glibc 2.27 where the
+# official armv7l build does not). Fall back to system node on platforms that
+# can't execute it (e.g. x86_64), provided it is recent enough for matter.js.
+NODE=${ADDON_DIR}/node/bin/node
+if ! ${NODE} -v >/dev/null 2>&1; then
+  NODE=node
+fi
+
+do_start() {
+  mkdir -p ${ADDONCFG_DIR}
+  # Wrap node in sh so we can redirect stdout/stderr to the log file.
+  # Pre-winston-init output (and any crashes) end up in ${LOGFILE}; once
+  # the bridge boots, winston also writes there directly.
+  start-stop-daemon --start --quiet --oknodo --make-pidfile --background \
+    --pidfile ${PIDFILE} \
+    --exec /bin/sh -- -c "exec ${NODE} ${ADDON_DIR}/dist/index.js >> ${LOGFILE} 2>&1"
+  logger -t homematic -p user.info "started ${ADDON_NAME}"
+}
+
+do_stop() {
+  # The CCU's busybox start-stop-daemon has no --retry: it only sends the
+  # signal. Wait for the process to actually exit ourselves — graceful
+  # shutdown can hang >60s on in-flight TCP connects, and a subsequent
+  # start would hit EADDRINUSE on ports the old process still holds.
+  PID=$(cat ${PIDFILE} 2>/dev/null)
+  start-stop-daemon -K -q -o -p ${PIDFILE}
+  if [ -n "${PID}" ]; then
+    n=0
+    while kill -0 ${PID} 2>/dev/null; do
+      n=$((n+1))
+      if [ ${n} -eq 20 ]; then
+        kill -9 ${PID} 2>/dev/null
+      elif [ ${n} -gt 25 ]; then
+        break
+      fi
+      sleep 1
+    done
+  fi
+  rm -f ${PIDFILE}
+  logger -t homematic -p user.info "stopped ${ADDON_NAME}"
+}
+
+case "$1" in
+  ""|start)
+    do_start
+    ;;
+  stop)
+    do_stop
+    ;;
+  restart)
+    do_stop
+    sleep 2
+    do_start
+    ;;
+  info)
+    echo "Info: <center><b>Matter Homematic</b><p>Bridges Homematic devices to Matter ecosystems (Apple Home, Google Home, Alexa, SmartThings)</p></center>"
+    echo "Name: Matter Homematic"
+    echo "Version: ${VER}"
+    echo "Operations: uninstall restart"
+    echo "Config-Url: /addons/${ADDON_NAME}/index.html"
+    echo "Update: /addons/${ADDON_NAME}/update-check.cgi"
+    ;;
+  uninstall)
+    logger -t homematic -p user.info "removing ${ADDON_NAME}"
+    do_stop 2>/dev/null
+    # Deregister from hm_addons.cfg (single-line TCL key/value list with
+    # nested braces — let tclsh parse it instead of fighting it with sed;
+    # CCU ships Tcl 8.2, so no [dict]).
+    tclsh <<EOF
+set f ${CONFIG_DIR}/hm_addons.cfg
+if {[file exists \$f]} {
+  set fd [open \$f r]; set d [read \$fd]; close \$fd
+  set out {}
+  foreach {k v} \$d {
+    if {\$k != "${ADDON_NAME}"} { lappend out \$k \$v }
+  }
+  set fd [open \$f w]; puts -nonewline \$fd \$out; close \$fd
+}
+EOF
+    rm -rf ${ADDON_DIR}
+    rm -f ${CONFIG_DIR}/rc.d/${ADDON_NAME}
+    rm -rf ${CONFIG_DIR}/addons/www/${ADDON_NAME}
+    rm -rf ${ADDONCFG_DIR}
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart|info|uninstall}" >&2
+    exit 1
+    ;;
+esac
+
+exit 0

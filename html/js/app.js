@@ -24,7 +24,9 @@ function switchTab(tabId, el) {
   // Load data for tab
   if (tabId === 'dashboard') loadDashboard();
   if (tabId === 'devices') loadDevices();
-  if (tabId === 'filters') loadFilters();
+  if (tabId === 'log') loadLog();
+  // The log polls itself; stop when the user navigates away
+  if (tabId !== 'log') stopLogAutoRefresh();
 }
 
 // --- Dashboard ---
@@ -33,7 +35,21 @@ let dashboardTimer = null;
 async function loadDashboard() {
   clearInterval(dashboardTimer);
   await refreshDashboard();
+  loadPairingInfo();
   dashboardTimer = setInterval(refreshDashboard, 5000);
+}
+
+async function loadPairingInfo() {
+  try {
+    const info = await fetchApi('getPairingInfo');
+    if (!info || info.error) return;
+    document.getElementById('manual-pairing-code').textContent = info.manualPairingCode || '--';
+    document.getElementById('pairing-qr').textContent = info.qrAscii || '--';
+    document.getElementById('qr-pairing-code').textContent = info.qrPairingCode || '';
+    document.getElementById('commissioned-hint').style.display = info.commissioned ? '' : 'none';
+  } catch (err) {
+    console.error('Failed to load pairing info:', err);
+  }
 }
 
 async function refreshDashboard() {
@@ -128,7 +144,7 @@ function renderDeviceTable(devices) {
       <td><span class="badge badge-matter">${esc(d.matterDeviceType || '--')}</span></td>
       <td>${renderTiltControl(d)}</td>
       <td>${esc(d.room || '')}</td>
-      <td>${renderState(d.currentState)}</td>
+      <td>${renderState(d)}</td>
     </tr>
   `;
   }).join('');
@@ -176,18 +192,56 @@ async function setTiltOverride(address, value) {
 
 async function toggleExposed(address, exposed) {
   try {
-    await fetchApi('setDeviceExposed', {
+    const result = await fetchApi('setDeviceExposed', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ address, exposed }),
     });
     const dev = allDevices.find(d => d.address === address);
     if (dev) dev.exposed = exposed;
-    document.getElementById('expose-alert').style.display = '';
+    // Endpoints are added/removed live; the restart banner only appears
+    // when the bridge couldn't apply the change at runtime.
+    if (result.message !== 'Applied.') {
+      document.getElementById('expose-alert').style.display = '';
+    }
   } catch (err) {
     console.error('Failed to toggle exposure:', err);
     alert('Failed to save. Check bridge logs.');
   }
+}
+
+// --- Log viewer ---
+let logTimer = null;
+
+async function refreshLog() {
+  try {
+    const data = await fetchApi('getLog&lines=300');
+    const view = document.getElementById('log-view');
+    const atBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 40;
+    view.textContent = (data.lines && data.lines.length) ? data.lines.join('\n') : (data.note || 'Log is empty');
+    // Follow the tail unless the user scrolled up to read something
+    if (atBottom) view.scrollTop = view.scrollHeight;
+  } catch (err) {
+    console.error('Failed to load log:', err);
+  }
+}
+
+function setLogAutoRefresh(enabled) {
+  clearInterval(logTimer);
+  logTimer = null;
+  if (enabled) logTimer = setInterval(refreshLog, 3000);
+}
+
+function stopLogAutoRefresh() {
+  clearInterval(logTimer);
+  logTimer = null;
+}
+
+async function loadLog() {
+  await refreshLog();
+  const view = document.getElementById('log-view');
+  view.scrollTop = view.scrollHeight;
+  setLogAutoRefresh(document.getElementById('log-autorefresh').checked);
 }
 
 async function restartBridge() {
@@ -245,15 +299,70 @@ async function toggleDefaultExposed() {
   }
 }
 
-function renderState(state) {
-  if (!state || typeof state !== 'object') return '<span class="text-body-secondary">--</span>';
+function renderState(d) {
+  const state = d.currentState;
+  if (!state || typeof state !== 'object' || Object.keys(state).length === 0) {
+    return '<span class="text-body-secondary">--</span>';
+  }
+
+  const pill = (active, onLabel, offLabel) =>
+    `<span class="state-pill ${active ? 'on' : 'off'}"><span class="dot"></span>${active ? onLabel : offLabel}</span>`;
+
+  // Switch / light
+  if ('onOff' in state) {
+    let extra = '';
+    if (state.currentLevel !== undefined && state.currentLevel !== null) {
+      extra = ` <span class="state-detail">${Math.round((state.currentLevel / 254) * 100)}%</span>`;
+    }
+    return pill(!!state.onOff, 'On', 'Off') + extra;
+  }
+
+  // Window covering — Matter: 0 = open, 10000 = closed
+  if ('currentPositionLiftPercent100ths' in state) {
+    const openPct = Math.max(0, Math.min(100, Math.round(100 - (state.currentPositionLiftPercent100ths ?? 0) / 100)));
+    let tilt = '';
+    if (state.currentPositionTiltPercent100ths !== undefined && state.currentPositionTiltPercent100ths !== null) {
+      const tiltPct = Math.max(0, Math.min(100, Math.round(100 - state.currentPositionTiltPercent100ths / 100)));
+      tilt = `<div class="state-detail">Tilt ${tiltPct}%</div>`;
+    }
+    return `<div class="state-cover">
+        <div class="state-bar"><div class="state-bar-fill" style="width:${openPct}%"></div></div>
+        <span class="state-detail">${openPct}% open</span>
+      </div>${tilt}`;
+  }
+
+  // Presence / motion (occupancy is a bitmap)
+  if ('occupancy' in state) {
+    return pill((state.occupancy & 1) === 1, 'Motion', 'Clear');
+  }
+
+  // Contact sensor — Matter stateValue true = closed
+  if ('stateValue' in state) {
+    return pill(!state.stateValue, 'Open', 'Closed');
+  }
+
+  // Door lock — Matter 1 = locked
+  if ('lockState' in state) {
+    return pill(state.lockState === 1, 'Locked', 'Unlocked');
+  }
+
+  // Thermostat / temperature sensors — Matter 0.01 °C units
+  if (state.localTemperature !== undefined && state.localTemperature !== null) {
+    let extra = '';
+    if (state.occupiedHeatingSetpoint !== undefined && state.occupiedHeatingSetpoint !== null) {
+      extra = ` <span class="state-detail">→ ${(state.occupiedHeatingSetpoint / 100).toFixed(1)} °C</span>`;
+    }
+    return `<span class="state-temp">${(state.localTemperature / 100).toFixed(1)} °C</span>${extra}`;
+  }
+  if (state.measuredValue !== undefined && state.measuredValue !== null) {
+    return `<span class="state-temp">${(state.measuredValue / 100).toFixed(1)}</span>`;
+  }
+
+  // Fallback: raw key/value pairs
   const parts = [];
   for (const [key, val] of Object.entries(state)) {
     if (val === undefined || val === null) continue;
-    let display = val;
-    if (typeof val === 'boolean') display = val ? 'ON' : 'OFF';
-    if (typeof val === 'number') display = Math.round(val * 100) / 100;
-    parts.push(`<span class="state-item">${esc(key)}: <strong>${esc(String(display))}</strong></span>`);
+    parts.push(`<span class="state-item">${esc(key)}: <strong>${esc(String(val))}</strong></span>`);
   }
   return parts.join(' ') || '<span class="text-body-secondary">--</span>';
 }
@@ -330,42 +439,6 @@ function renderUnmappedChannels() {
       </tr>
     `;
   }).join('');
-}
-
-// --- Filter Config ---
-async function loadFilters() {
-  try {
-    const data = await fetchApi('getConfig');
-    const f = data.filter || {};
-    document.getElementById('filter-rooms').value = (f.rooms || []).join('\n');
-    document.getElementById('filter-functions').value = (f.functions || []).join('\n');
-    document.getElementById('filter-include').value = (f.include || []).join('\n');
-    document.getElementById('filter-exclude').value = (f.exclude || []).join('\n');
-  } catch (err) {
-    console.error('Failed to load filter config:', err);
-  }
-}
-
-async function saveFilter(event) {
-  event.preventDefault();
-  const toArray = id => document.getElementById(id).value.split('\n').map(s => s.trim()).filter(Boolean);
-  const filter = {
-    rooms: toArray('filter-rooms'),
-    functions: toArray('filter-functions'),
-    include: toArray('filter-include'),
-    exclude: toArray('filter-exclude'),
-  };
-  try {
-    await fetchApi('saveDeviceFilter', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(filter),
-    });
-    document.getElementById('filter-alert').style.display = '';
-  } catch (err) {
-    console.error('Failed to save filter:', err);
-    alert('Failed to save filter configuration.');
-  }
 }
 
 // --- Utility ---

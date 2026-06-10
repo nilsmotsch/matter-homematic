@@ -1,0 +1,55 @@
+#!/bin/sh
+# CCU/RaspberryMatic addon installer for matter-homematic.
+# Invoked by the WebUI installer with the platform name as $1.
+
+ADDONNAME=matter-homematic
+CONFIG_DIR=/usr/local/etc/config
+ADDON_DIR=/usr/local/addons/${ADDONNAME}
+ADDONWWW_DIR=${CONFIG_DIR}/addons/www
+ADDONCFG_DIR=${CONFIG_DIR}/addons/${ADDONNAME}
+RCD_DIR=${CONFIG_DIR}/rc.d
+
+if [ "$1" != "HM-RASPBERRYMATIC" ] && [ "$1" != "CCU3" ]; then
+  echo "matter-homematic: unsupported platform '$1'" >&2
+  exit 1
+fi
+
+mount | grep /usr/local >/dev/null 2>&1 || mount /usr/local
+
+# Code tree (overwritten on every install/update)
+rm -rf ${ADDON_DIR}
+mkdir -p ${ADDON_DIR}
+cp -af matter-homematic/. ${ADDON_DIR}/
+chmod 755 ${ADDON_DIR}
+
+# Service script
+mkdir -p ${RCD_DIR}
+cp -af rc.d/${ADDONNAME} ${RCD_DIR}/${ADDONNAME}
+chmod +x ${RCD_DIR}/${ADDONNAME}
+
+# WebUI tile
+mkdir -p ${ADDONWWW_DIR}/${ADDONNAME}
+cp -af www/. ${ADDONWWW_DIR}/${ADDONNAME}/
+chmod +x ${ADDONWWW_DIR}/${ADDONNAME}/update-check.cgi 2>/dev/null
+
+# Persistent config dir (config.json, .matter-homematic/, logs)
+mkdir -p ${ADDONCFG_DIR}
+
+# Register in hm_addons.cfg — this is what makes the addon show up in the
+# CCU WebUI (Einstellungen → Systemsteuerung → Zusatzsoftware). The file is
+# a single-line TCL dict; append our entry if missing.
+HM_ADDONS_CFG=${CONFIG_DIR}/hm_addons.cfg
+touch ${HM_ADDONS_CFG}
+if ! grep -q "ID ${ADDONNAME}" ${HM_ADDONS_CFG}; then
+  printf '%s' " ${ADDONNAME} {CONFIG_URL /addons/${ADDONNAME}/index.html CONFIG_DESCRIPTION {de {<li>Matter Bridge f&uuml;r Homematic Ger&auml;te</li>} en {<li>Matter bridge for Homematic devices</li>}} ID ${ADDONNAME} CONFIG_NAME {Matter Homematic}}" >> ${HM_ADDONS_CFG}
+fi
+
+sync
+
+# First-time install: reboot so rc.d brings the service up.
+# Update: just exit; rc.d restart can be triggered from the WebUI.
+if [ ! -f ${ADDONCFG_DIR}/.installed ]; then
+  touch ${ADDONCFG_DIR}/.installed
+  exit 10
+fi
+exit 0

@@ -18,6 +18,18 @@ interface WebServerDeps {
   getCcuHost: () => string;
   configPath: string;
   restartBridge: () => Promise<void>;
+  /** Apply an exposure toggle to the running bridge (add/remove the
+   *  endpoint live). Returns true if the topology changed. */
+  setDeviceExposed: (address: string, exposed: boolean) => Promise<boolean>;
+  /** Matter pairing codes incl. ASCII QR; null until the server is up. */
+  getPairingInfo: () => {
+    manualPairingCode: string;
+    qrPairingCode: string;
+    qrAscii: string;
+    commissioned: boolean;
+  } | null;
+  /** Absolute path of the bridge log file ('' when logging to console only). */
+  logFilePath: string;
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -40,7 +52,15 @@ export class WebServer {
   constructor(port: number, deps: WebServerDeps) {
     this.port = port;
     this.deps = deps;
-    this.staticDir = path.resolve(process.cwd(), 'html');
+    // Resolve relative to the compiled file so the daemonized service finds
+    // the static assets regardless of cwd. Two layouts exist:
+    //   tsc:           dist/web/WebServer.js → ../../html
+    //   esbuild addon: dist/index.js         → ../html
+    const candidates = [
+      path.resolve(__dirname, '..', '..', 'html'),
+      path.resolve(__dirname, '..', 'html'),
+    ];
+    this.staticDir = candidates.find((dir) => fs.existsSync(dir)) ?? candidates[0];
     this.startTime = new Date();
 
     this.server = http.createServer((req, res) => {
@@ -98,16 +118,16 @@ export class WebServer {
         this.sendJson(res, 200, this.getSupportedTypes());
         break;
 
-      case 'getConfig':
-        this.sendJson(res, 200, this.getConfig());
+      case 'getPairingInfo':
+        this.sendJson(res, 200, this.deps.getPairingInfo() || { error: 'Matter server not started' });
         break;
 
-      case 'saveDeviceFilter':
-        if (req.method !== 'POST') {
-          this.sendJson(res, 405, { error: 'POST required' });
-          return;
-        }
-        this.handleSaveDeviceFilter(req, res);
+      case 'getLog':
+        this.handleGetLog(req, res);
+        break;
+
+      case 'getConfig':
+        this.sendJson(res, 200, this.getConfig());
         break;
 
       case 'setDeviceExposed':
@@ -213,6 +233,39 @@ export class WebServer {
     }
   }
 
+  /**
+   * Tail the bridge log. Reads only the last 256 KB of the file (the log
+   * grows unbounded on the CCU) and strips ANSI escape sequences from
+   * winston's console colors and matter.js's diagnostic output.
+   */
+  private handleGetLog(req: http.IncomingMessage, res: http.ServerResponse): void {
+    const file = this.deps.logFilePath;
+    if (!file || !fs.existsSync(file)) {
+      this.sendJson(res, 200, { lines: [], note: 'No log file configured (console logging only)' });
+      return;
+    }
+    const query = url.parse(req.url || '', true).query;
+    const wanted = Math.min(parseInt(String(query.lines || ''), 10) || 200, 1000);
+    try {
+      const stat = fs.statSync(file);
+      const readBytes = Math.min(stat.size, 256 * 1024);
+      const buf = Buffer.alloc(readBytes);
+      const fd = fs.openSync(file, 'r');
+      try {
+        fs.readSync(fd, buf, 0, readBytes, stat.size - readBytes);
+      } finally {
+        fs.closeSync(fd);
+      }
+      // eslint-disable-next-line no-control-regex
+      const text = buf.toString('utf-8').replace(/\x1b\[[0-9;]*m/g, '');
+      let lines = text.split('\n').filter((l) => l.trim() !== '');
+      if (readBytes < stat.size && lines.length > 0) lines = lines.slice(1); // drop partial first line
+      this.sendJson(res, 200, { lines: lines.slice(-wanted), size: stat.size });
+    } catch (err) {
+      this.sendJson(res, 500, { error: `Failed to read log: ${err}` });
+    }
+  }
+
   private writeConfigPatch(patch: (cfg: any) => void): void {
     let config: any = {};
     try {
@@ -269,14 +322,6 @@ export class WebServer {
     }
   }
 
-  private handleSaveDeviceFilter(req: http.IncomingMessage, res: http.ServerResponse): void {
-    this.readJsonBody(req, res, (newFilter) => {
-      this.writeConfigPatch((config) => { config.devices.filter = newFilter; });
-      getLogger().info('Device filter config saved. Restart required to take effect.');
-      this.sendJson(res, 200, { success: true, message: 'Filter saved. Restart bridge to apply.' });
-    });
-  }
-
   private handleSetDeviceExposed(req: http.IncomingMessage, res: http.ServerResponse): void {
     this.readJsonBody(req, res, (payload) => {
       const { address, exposed } = payload || {};
@@ -288,8 +333,15 @@ export class WebServer {
         if (!config.devices.exposed) config.devices.exposed = {};
         config.devices.exposed[address] = exposed;
       });
-      getLogger().info(`Device ${address} exposure set to ${exposed}. Restart required.`);
-      this.sendJson(res, 200, { success: true, message: 'Saved. Restart bridge to apply.' });
+      this.deps.setDeviceExposed(address, exposed)
+        .then((changed) => {
+          getLogger().info(`Device ${address} exposure set to ${exposed}${changed ? ' (applied live)' : ''}`);
+          this.sendJson(res, 200, { success: true, message: changed ? 'Applied.' : 'Saved.' });
+        })
+        .catch((err) => {
+          getLogger().error(`Live exposure toggle for ${address} failed: ${err}`);
+          this.sendJson(res, 200, { success: true, message: 'Saved. Restart bridge to apply.' });
+        });
     });
   }
 

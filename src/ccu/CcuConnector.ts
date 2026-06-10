@@ -10,6 +10,13 @@ import * as http from 'http';
 import * as os from 'os';
 import { getLogger } from '../utils/Logger';
 
+// xmlrpc's XML codec internals — used by the hand-rolled callback server
+// (see startCallbackServer for why xmlrpc.createServer can't be used).
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const XmlRpcSerializer = require('xmlrpc/lib/serializer');
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const XmlRpcDeserializer = require('xmlrpc/lib/deserializer');
+
 // Types for Homematic devices
 interface HmDevice {
   address: string;
@@ -18,12 +25,14 @@ interface HmDevice {
   channels: HmChannel[];
 }
 
-interface HmChannel {
+export interface HmChannel {
   address: string;
   type: string;
   name: string;
   room?: string;
   function?: string;
+  /** XML-RPC interface the channel lives on (BidCos-RF, HmIP-RF, …). */
+  interface?: string;
   paramsets: {
     VALUES?: Record<string, any>;
     MASTER?: Record<string, any>;
@@ -126,92 +135,103 @@ export class CcuConnector extends EventEmitter {
   }
 
   /**
-   * Start XML-RPC callback server
+   * Start the XML-RPC callback server.
+   *
+   * Hand-rolled HTTP layer instead of xmlrpc.createServer for two CCU
+   * compatibility requirements discovered on real CCU3 firmware:
+   *
+   * 1. Responses must carry a Content-Length header — node defaults to
+   *    chunked transfer encoding, which the CCU's old rfd XML-RPC client
+   *    cannot parse (every event delivery fails with an empty error).
+   * 2. *Every* method must get a valid XML-RPC response. The HmIP HMServer
+   *    calls `listDevices` on the callback server during init and aborts
+   *    the entire callback registration when it gets xmlrpc's default
+   *    404/empty-body answer ("Unexpected EOF in prolog" in hmserver.log)
+   *    — after which no events are ever delivered.
    */
   private async startCallbackServer(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const server = xmlrpc.createServer({ 
-        host: '0.0.0.0', 
-        port: this.config.callbackPort 
-      });
-
-      // Handle incoming events from CCU
-      server.on('event', (err: Error | null, params: any[], callback: (...args: any[]) => void) => {
-        if (err) {
-          getLogger().error('Event error:', err);
-          callback(null, '');
-          return;
-        }
-
-        const [interfaceId, address, key, value] = params;
-        this.handleEvent(interfaceId, address, key, value);
-        callback(null, '');
-      });
-
-      // Handle new devices notification
-      server.on('newDevices', (err: Error | null, params: any[], callback: (...args: any[]) => void) => {
-        if (err) {
-          getLogger().error('newDevices error:', err);
-          callback(null, '');
-          return;
-        }
-
-        const [interfaceId, devices] = params;
-        getLogger().info(`New devices on ${interfaceId}:`, devices.length);
-        this.emit('newDevices', interfaceId, devices);
-        callback(null, '');
-      });
-
-      // Handle deleted devices
-      server.on('deleteDevices', (err: Error | null, params: any[], callback: (...args: any[]) => void) => {
-        if (err) {
-          getLogger().error('deleteDevices error:', err);
-          callback(null, '');
-          return;
-        }
-
-        const [interfaceId, addresses] = params;
-        getLogger().info(`Deleted devices on ${interfaceId}:`, addresses);
-        this.emit('deleteDevices', interfaceId, addresses);
-        callback(null, '');
-      });
-
-      // Handle system.listMethods (required by CCU)
-      server.on('system.listMethods', (err: Error | null, params: any[], callback: (...args: any[]) => void) => {
-        callback(null, ['event', 'newDevices', 'deleteDevices', 'system.listMethods', 'system.multicall']);
-      });
-
-      // Handle multicall
-      server.on('system.multicall', (err: Error | null, params: any[], callback: (...args: any[]) => void) => {
-        const calls = params[0] || [];
-        const results: any[] = [];
-
-        for (const call of calls) {
-          if (call.methodName === 'event') {
-            const [interfaceId, address, key, value] = call.params;
-            this.handleEvent(interfaceId, address, key, value);
-            results.push(['']);
-          } else {
-            results.push(['']);
+      const server = http.createServer((req, res) => {
+        const deserializer = new XmlRpcDeserializer();
+        deserializer.deserializeMethodCall(req, (error: Error | null, methodName: string, params: any[]) => {
+          if (error) {
+            getLogger().warn(`Callback server: bad request: ${error}`);
+            res.writeHead(400);
+            res.end();
+            return;
           }
-        }
-
-        callback(null, results);
+          let result: any = '';
+          try {
+            result = this.handleCallbackMethod(methodName, params);
+          } catch (err) {
+            getLogger().error(`Callback method ${methodName} failed:`, err);
+            result = '';
+          }
+          const xml = XmlRpcSerializer.serializeMethodResponse(result);
+          res.writeHead(200, {
+            'Content-Type': 'text/xml',
+            'Content-Length': Buffer.byteLength(xml),
+          });
+          res.end(xml);
+        });
       });
 
-      // xmlrpc's createServer exposes the underlying http.Server as .httpServer
-      // and 'listening' / 'error' are emitted on that, not on the xmlrpc server itself.
-      this.callbackServer = server.httpServer;
-      server.httpServer.on('listening', () => {
-        getLogger().info(`Callback server listening on port ${this.config.callbackPort}`);
-        resolve();
-      });
-
-      server.httpServer.on('error', (err: Error) => {
+      this.callbackServer = server;
+      server.on('error', (err: Error) => {
         getLogger().error('Callback server error:', err);
         reject(err);
       });
+      server.listen(this.config.callbackPort, '0.0.0.0', () => {
+        getLogger().info(`Callback server listening on port ${this.config.callbackPort}`);
+        resolve();
+      });
     });
+  }
+
+  /**
+   * Dispatch one XML-RPC method from the CCU and return its result value.
+   */
+  private handleCallbackMethod(methodName: string, params: any[]): any {
+    switch (methodName) {
+      case 'event': {
+        const [interfaceId, address, key, value] = params;
+        this.handleEvent(interfaceId, address, key, value);
+        return '';
+      }
+
+      // Init handshake: the CCU asks which devices we already know, then
+      // pushes the delta via newDevices. We answer "none" — discovery runs
+      // through our own client-side listDevices call instead.
+      case 'listDevices':
+        return [];
+
+      case 'newDevices': {
+        const [interfaceId, devices] = params;
+        getLogger().info(`New devices on ${interfaceId}: ${devices?.length ?? 0}`);
+        this.emit('newDevices', interfaceId, devices);
+        return '';
+      }
+
+      case 'deleteDevices': {
+        const [interfaceId, addresses] = params;
+        this.emit('deleteDevices', interfaceId, addresses);
+        return '';
+      }
+
+      case 'system.listMethods':
+        return ['event', 'listDevices', 'newDevices', 'deleteDevices', 'system.listMethods', 'system.multicall'];
+
+      case 'system.multicall': {
+        const calls = params[0] || [];
+        return calls.map((call: any) => [this.handleCallbackMethod(call.methodName, call.params)]);
+      }
+
+      // setReadyConfig, updateDevice, readdedDevice, … — acknowledge
+      // anything else so strict CCU components never see an error.
+      default:
+        getLogger().debug(`Callback server: ignoring method ${methodName}`);
+        return '';
+    }
   }
 
   /**
@@ -263,6 +283,7 @@ export class CcuConnector extends EventEmitter {
             address: device.ADDRESS,
             type: device.TYPE,
             name: device.ADDRESS, // Will be updated from ReGa
+            interface: interfaceName,
             paramsets: {}
           };
 
@@ -308,7 +329,12 @@ export class CcuConnector extends EventEmitter {
    */
   private async fetchDeviceNames(): Promise<void> {
     if (!this.config.user) {
-      getLogger().info('No CCU credentials configured; skipping name/room lookup (set CCU_USER/CCU_PASSWORD env vars)');
+      // Without credentials, try the ReGa script endpoint. Modern firmware
+      // returns 403 to remote clients, but requests from the CCU itself
+      // (the addon deployment) are unauthenticated — the same mechanism
+      // hap-homematic relies on.
+      if (await this.fetchDeviceNamesViaRega()) return;
+      getLogger().info('No CCU credentials configured and ReGa script endpoint unavailable; using addresses as names (set CCU_USER/CCU_PASSWORD env vars)');
       return;
     }
     getLogger().info('Fetching device names from CCU JSON-RPC...');
@@ -361,6 +387,152 @@ export class CcuConnector extends EventEmitter {
         await this.jsonRpc('Session.logout', { _session_id_: sid });
       } catch { /* best-effort */ }
     }
+  }
+
+  /**
+   * Re-read a channel's VALUES paramset from the CCU (used by the periodic
+   * state resync — events can be missed across restarts/reconnects).
+   * Updates the local cache and returns the fresh values.
+   */
+  async readValues(address: string): Promise<Record<string, any> | null> {
+    const channel = this.channels.get(address);
+    if (!channel?.interface) return null;
+    try {
+      const values = await this.rpcCall(channel.interface, 'getParamset', [address, 'VALUES']);
+      channel.paramsets.VALUES = values;
+      return values as Record<string, any>;
+    } catch (err) {
+      getLogger().debug(`readValues(${address}) failed: ${err}`);
+      return null;
+    }
+  }
+
+  /**
+   * Fetch channel names and room assignments by running a ReGa script
+   * against `/tclrega.exe`. Only reachable without credentials from the
+   * CCU itself; remote clients on modern firmware get 403 and fall back.
+   * Names are UriEncode()d inside ReGa so they survive the ISO-8859-1
+   * transport regardless of content.
+   */
+  private async fetchDeviceNamesViaRega(): Promise<boolean> {
+    const script =
+      'string did; string cid; boolean cf = true;' +
+      'Write("{\\"channels\\":[");' +
+      'foreach (did, root.Devices().EnumUsedIDs()) {' +
+      '  object d = dom.GetObject(did);' +
+      '  if (d && d.ReadyConfig()) {' +
+      '    foreach (cid, d.Channels().EnumUsedIDs()) {' +
+      '      object c = dom.GetObject(cid);' +
+      '      if (c) {' +
+      '        if (cf) { cf = false; } else { Write(","); }' +
+      '        Write("{\\"id\\":" # cid # ",\\"address\\":\\"" # c.Address() # "\\",\\"name\\":\\"" # c.Name().UriEncode() # "\\"}");' +
+      '      }' +
+      '    }' +
+      '  }' +
+      '}' +
+      'Write("],\\"rooms\\":[");' +
+      'string rid; boolean rf = true;' +
+      'foreach (rid, dom.GetObject(ID_ROOMS).EnumUsedIDs()) {' +
+      '  object r = dom.GetObject(rid);' +
+      '  if (r) {' +
+      '    if (rf) { rf = false; } else { Write(","); }' +
+      '    Write("{\\"name\\":\\"" # r.Name().UriEncode() # "\\",\\"channelIds\\":[");' +
+      '    string rcid; boolean rcf = true;' +
+      '    foreach (rcid, r.EnumUsedIDs()) {' +
+      '      if (rcf) { rcf = false; } else { Write(","); }' +
+      '      Write(rcid);' +
+      '    }' +
+      '    Write("]}");' +
+      '  }' +
+      '}' +
+      'Write("]}");';
+
+    // ReGa UriEncode() percent-escapes ISO-8859-1 bytes (%E4 = ä), which
+    // decodeURIComponent would reject as invalid UTF-8 — decode byte-wise.
+    const decodeRega = (s: string): string =>
+      s.replace(/%([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+
+    // Port 8181 is ReGa's own HTTP port (no auth layer); fall back to the
+    // WebUI port, which also proxies tclrega.exe on older/unlocked setups.
+    for (const port of [8181, this.config.regaPort ?? 80]) {
+      let parsed: { channels?: any[]; rooms?: any[] };
+      try {
+        const raw = await this.regaScript(script, port);
+        parsed = JSON.parse(raw);
+      } catch {
+        continue;
+      }
+
+      const idToAddress = new Map<string, string>();
+      let nameUpdates = 0;
+      for (const ch of parsed.channels || []) {
+        const address: string = ch.address;
+        idToAddress.set(String(ch.id), address);
+        const channel = this.channels.get(address);
+        if (!channel) continue;
+        const name = decodeRega(String(ch.name || ''));
+        if (name && name !== address) {
+          channel.name = name;
+          nameUpdates++;
+        }
+      }
+
+      let roomUpdates = 0;
+      for (const room of parsed.rooms || []) {
+        const roomName = decodeRega(String(room.name || ''));
+        for (const cid of room.channelIds || []) {
+          const address = idToAddress.get(String(cid));
+          const channel = address ? this.channels.get(address) : undefined;
+          if (!channel) continue;
+          channel.room = roomName;
+          roomUpdates++;
+        }
+      }
+
+      getLogger().info(`Applied ReGa names to ${nameUpdates} channels, rooms to ${roomUpdates} channels (port ${port})`);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * POST a ReGa script to `/tclrega.exe` and return the script's raw
+   * output with the trailing `<xml>…</xml>` status block stripped.
+   */
+  private regaScript(script: string, port: number): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const data = Buffer.from(script, 'latin1');
+      const req = http.request(
+        {
+          host: this.config.host,
+          port,
+          path: '/tclrega.exe',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain;charset=ISO-8859-1',
+            'Content-Length': data.length,
+          },
+          timeout: 15000,
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => {
+            if (res.statusCode && res.statusCode >= 400) {
+              reject(new Error(`tclrega.exe HTTP ${res.statusCode}`));
+              return;
+            }
+            const body = Buffer.concat(chunks).toString('latin1');
+            const xmlStart = body.lastIndexOf('<xml>');
+            resolve(xmlStart >= 0 ? body.slice(0, xmlStart) : body);
+          });
+        }
+      );
+      req.on('error', reject);
+      req.on('timeout', () => req.destroy(new Error('tclrega.exe timeout')));
+      req.write(data);
+      req.end();
+    });
   }
 
   /**

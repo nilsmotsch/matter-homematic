@@ -5,3 +5,7 @@ dist/
 config.json
 config.test.json
 *.js.map
+build/
+build-cache/
+dist-addon/
+*.img.gz

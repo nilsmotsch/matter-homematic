@@ -54,13 +54,14 @@
         </a>
       </li>
       <li class="nav-item">
-        <a class="nav-link" href="#" data-tab="filters" onclick="switchTab('filters', this)">
+        <a class="nav-link" href="#" data-tab="log" onclick="switchTab('log', this)">
           <svg class="nav-icon" width="18" height="18" viewBox="0 0 18 18" fill="none">
-            <line x1="1" y1="4" x2="17" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            <line x1="3" y1="9" x2="15" y2="9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            <line x1="6" y1="14" x2="12" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <rect x="2" y="1" width="14" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="5" y1="5" x2="13" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <line x1="5" y1="9" x2="13" y2="9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <line x1="5" y1="13" x2="10" y2="13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
-          Filter Config
+          Log
         </a>
       </li>
     </ul>
@@ -145,7 +146,7 @@
 
           <!-- Pairing Card -->
           <div class="row g-3">
-            <div class="col-md-6">
+            <div class="col-lg-8">
               <div class="card pairing-card">
                 <div class="card-body">
                   <div class="pairing-header">
@@ -155,17 +156,30 @@
                     </svg>
                     <span>Pairing Information</span>
                   </div>
-                  <div class="pairing-grid">
-                    <div class="pairing-item">
-                      <div class="pairing-label">Setup Code</div>
-                      <div class="pairing-value mono" id="passcode">--</div>
+                  <div class="pairing-layout">
+                    <div class="pairing-details">
+                      <div class="pairing-grid">
+                        <div class="pairing-item">
+                          <div class="pairing-label">Manual Pairing Code</div>
+                          <div class="pairing-value mono" id="manual-pairing-code">--</div>
+                        </div>
+                        <div class="pairing-item">
+                          <div class="pairing-label">Setup Code</div>
+                          <div class="pairing-value mono" id="passcode">--</div>
+                        </div>
+                        <div class="pairing-item">
+                          <div class="pairing-label">Discriminator</div>
+                          <div class="pairing-value mono" id="discriminator">--</div>
+                        </div>
+                      </div>
+                      <div class="pairing-hint">Scan the QR code or use the manual pairing code in your Matter controller app (Apple Home, Google Home, Alexa)</div>
+                      <div class="pairing-hint" id="commissioned-hint" style="display:none">Already paired with a controller — add more controllers from within that app (e.g. Apple Home sharing), not with this code.</div>
                     </div>
-                    <div class="pairing-item">
-                      <div class="pairing-label">Discriminator</div>
-                      <div class="pairing-value mono" id="discriminator">--</div>
+                    <div class="pairing-qr-box">
+                      <pre class="pairing-qr" id="pairing-qr">--</pre>
+                      <div class="pairing-hint mono" id="qr-pairing-code"></div>
                     </div>
                   </div>
-                  <div class="pairing-hint">Use this code in your Matter controller app (Apple Home, Google Home, Alexa)</div>
                 </div>
               </div>
             </div>
@@ -258,56 +272,22 @@
           </div>
         </div>
 
-        <!-- Filter Config Tab -->
-        <div id="tab-filters" class="tab-content-pane" style="display:none">
+
+        <!-- Log Tab -->
+        <div id="tab-log" class="tab-content-pane" style="display:none">
           <div class="content-header">
-            <h1>Filter Configuration</h1>
+            <h4>Bridge Log</h4>
+            <div class="header-actions">
+              <label class="form-check form-switch" style="display:inline-block;margin-right:12px">
+                <input class="form-check-input" type="checkbox" id="log-autorefresh" checked onchange="setLogAutoRefresh(this.checked)">
+                <span class="form-check-label">Auto-refresh</span>
+              </label>
+              <button class="btn btn-outline-primary btn-sm" onclick="refreshLog()">Refresh</button>
+            </div>
           </div>
-
-          <div id="filter-alert" class="alert alert-warning filter-alert" style="display:none">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style="margin-right:8px;vertical-align:-2px">
-              <path d="M8 1L1 14h14L8 1z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
-              <line x1="8" y1="6" x2="8" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-              <circle cx="8" cy="12.5" r="0.75" fill="currentColor"/>
-            </svg>
-            <strong>Restart required.</strong> Filter changes take effect after restarting the bridge.
-          </div>
-
           <div class="card">
             <div class="card-body">
-              <form id="filter-form" onsubmit="saveFilter(event)">
-                <div class="row g-4">
-                  <div class="col-md-6">
-                    <div class="mb-4">
-                      <label class="form-label filter-label">Rooms</label>
-                      <div class="filter-desc">Only bridge devices in these rooms (one per line, empty = all)</div>
-                      <textarea class="form-control mono filter-textarea" id="filter-rooms" rows="5"></textarea>
-                    </div>
-                    <div class="mb-4">
-                      <label class="form-label filter-label">Functions</label>
-                      <div class="filter-desc">Only bridge devices with these functions (one per line, empty = all)</div>
-                      <textarea class="form-control mono filter-textarea" id="filter-functions" rows="5"></textarea>
-                    </div>
-                  </div>
-                  <div class="col-md-6">
-                    <div class="mb-4">
-                      <label class="form-label filter-label">Include</label>
-                      <div class="filter-desc">Explicitly include these addresses (one per line)</div>
-                      <textarea class="form-control mono filter-textarea" id="filter-include" rows="5"></textarea>
-                    </div>
-                    <div class="mb-4">
-                      <label class="form-label filter-label">Exclude</label>
-                      <div class="filter-desc">Explicitly exclude these addresses (one per line)</div>
-                      <textarea class="form-control mono filter-textarea" id="filter-exclude" rows="5"></textarea>
-                    </div>
-                  </div>
-                </div>
-                <div class="filter-actions">
-                  <button type="submit" class="btn btn-primary save-btn">
-                    Save Configuration
-                  </button>
-                </div>
-              </form>
+              <pre class="log-view mono" id="log-view">Loading…</pre>
             </div>
           </div>
         </div>

@@ -138,6 +138,14 @@ export class MatterHomematicBridge {
       let values = channel.paramsets.VALUES || {};
       const stateSource = this.findStateSourceChannel(address, channel.type, channels);
       if (stateSource) {
+        // Each HmIP actuator output is one *_TRANSMITTER plus three
+        // *_VIRTUAL_RECEIVER channels — the extra two receivers exist only
+        // for direct device peering links and drive the same physical
+        // output. Expose just the first receiver of each transmitter group
+        // so one physical switch/dimmer/blind is a single Matter device.
+        if ((this.stateSources.get(stateSource)?.length ?? 0) > 0) {
+          continue;
+        }
         const txValues = channels.get(stateSource)?.paramsets.VALUES || {};
         values = { ...values };
         for (const key of MatterHomematicBridge.MIRRORED_KEYS) {

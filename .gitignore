@@ -4,6 +4,7 @@ dist/
 .venv/
 config.json
 config.test.json
+.env.local
 *.js.map
 build/
 build-cache/

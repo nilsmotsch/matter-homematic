@@ -86,6 +86,16 @@ export class CcuConnector extends EventEmitter {
   }
 
   /**
+   * Whether a CCU name is just the firmware default (no user label). The CCU
+   * seeds unnamed objects with names that embed their own address, e.g.
+   * `HmIP-FBL 00139F2991A80B:1` for a channel or `HmIP-FBL 00139F2991A80B`
+   * for a device. Such a name carries no information beyond the address.
+   */
+  private isTemplateName(name: string, address: string): boolean {
+    return !name || name === address || name.includes(address);
+  }
+
+  /**
    * Connect to all enabled CCU interfaces
    */
   async connect(): Promise<void> {
@@ -382,13 +392,18 @@ export class CcuConnector extends EventEmitter {
       const idToAddress = new Map<string, string>();
       let nameUpdates = 0;
       for (const dev of devices || []) {
+        // Device name fallback for channels that only carry a template name.
+        const devName: string = (dev.name && !this.isTemplateName(dev.name, dev.address))
+          ? dev.name : '';
         for (const ch of dev.channels || []) {
           const address: string = ch.address;
           idToAddress.set(String(ch.id), address);
           const channel = this.channels.get(address);
           if (!channel) continue;
-          if (ch.name && ch.name !== address) {
-            channel.name = ch.name;
+          let name: string = ch.name || '';
+          if (this.isTemplateName(name, address) && devName) name = devName;
+          if (name && name !== address) {
+            channel.name = name;
             nameUpdates++;
           }
         }
@@ -457,6 +472,18 @@ export class CcuConnector extends EventEmitter {
       '    }' +
       '  }' +
       '}' +
+      // Device-level names: a user may name only the device (top-level),
+      // leaving channels with their default template names. Dump those so we
+      // can fall back to the device name for otherwise-unnamed channels.
+      'Write("],\\"devices\\":[");' +
+      'string did2; boolean df = true;' +
+      'foreach (did2, root.Devices().EnumUsedIDs()) {' +
+      '  object d2 = dom.GetObject(did2);' +
+      '  if (d2 && d2.ReadyConfig()) {' +
+      '    if (df) { df = false; } else { Write(","); }' +
+      '    Write("{\\"address\\":\\"" # d2.Address() # "\\",\\"name\\":\\"" # d2.Name().UriEncode() # "\\"}");' +
+      '  }' +
+      '}' +
       'Write("],\\"rooms\\":[");' +
       'string rid; boolean rf = true;' +
       'foreach (rid, dom.GetObject(ID_ROOMS).EnumUsedIDs()) {' +
@@ -479,12 +506,22 @@ export class CcuConnector extends EventEmitter {
     // Port 8181 is ReGa's own HTTP port (no auth layer); fall back to the
     // WebUI port, which also proxies tclrega.exe on older/unlocked setups.
     for (const port of [8181, this.config.regaPort ?? 80]) {
-      let parsed: { channels?: any[]; rooms?: any[] };
+      let parsed: { channels?: any[]; devices?: any[]; rooms?: any[] };
       try {
         const raw = await this.regaScript(script, port);
         parsed = JSON.parse(raw);
       } catch {
         continue;
+      }
+
+      // deviceAddress → user-assigned device name (template names filtered out)
+      const deviceNames = new Map<string, string>();
+      for (const dev of parsed.devices || []) {
+        const address = String(dev.address || '');
+        const name = decodeRega(String(dev.name || ''));
+        if (address && !this.isTemplateName(name, address)) {
+          deviceNames.set(address, name);
+        }
       }
 
       const idToAddress = new Map<string, string>();
@@ -494,7 +531,14 @@ export class CcuConnector extends EventEmitter {
         idToAddress.set(String(ch.id), address);
         const channel = this.channels.get(address);
         if (!channel) continue;
-        const name = decodeRega(String(ch.name || ''));
+        const own = decodeRega(String(ch.name || ''));
+        // Prefer the channel's own user name; fall back to the device name
+        // when the channel only carries a default template name.
+        let name = own;
+        if (this.isTemplateName(own, address)) {
+          const devName = deviceNames.get(address.split(':')[0]);
+          if (devName) name = devName;
+        }
         if (name && name !== address) {
           channel.name = name;
           nameUpdates++;

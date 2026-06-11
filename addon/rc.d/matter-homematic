@@ -65,9 +65,13 @@ case "$1" in
     do_stop
     ;;
   restart)
-    do_stop
-    sleep 2
-    do_start
+    # WebUI ops (restart/uninstall) run via tcl exec in cp_software.cgi, which
+    # reports "Failure" if anything reaches stderr — keep these branches silent.
+    {
+      do_stop
+      sleep 2
+      do_start
+    } >/dev/null 2>&1
     ;;
   info)
     echo "Info: <center><b>Matter Homematic</b><p>Bridges Homematic devices to Matter ecosystems (Apple Home, Google Home, Alexa, SmartThings)</p></center>"
@@ -79,7 +83,8 @@ case "$1" in
     ;;
   uninstall)
     logger -t homematic -p user.info "removing ${ADDON_NAME}"
-    do_stop 2>/dev/null
+    exec >/dev/null 2>&1   # any stderr makes the WebUI report "Failure"
+    do_stop
     # Deregister from hm_addons.cfg (single-line TCL key/value list with
     # nested braces — let tclsh parse it instead of fighting it with sed;
     # CCU ships Tcl 8.2, so no [dict]).

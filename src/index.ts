@@ -36,7 +36,9 @@ function buildDefaultConfig() {
       interfaces: {
         "BidCos-RF": { enabled: true, port: 2001 },
         "HmIP-RF": { enabled: true, port: 2010 },
-        "VirtualDevices": { enabled: false, port: 9292 }
+        "VirtualDevices": { enabled: false, port: 9292 },
+        // shelly-homematic addon's virtual interface (Shelly devices as HM)
+        "ShellyHM": { enabled: false, port: 2121 }
       },
       callbackPort: 9875,
       regaPort: 80,

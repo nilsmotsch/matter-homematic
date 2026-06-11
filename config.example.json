@@ -22,6 +22,10 @@
       "VirtualDevices": {
         "enabled": false,
         "port": 9292
+      },
+      "ShellyHM": {
+        "enabled": false,
+        "port": 2121
       }
     },
     "callbackPort": 9875,

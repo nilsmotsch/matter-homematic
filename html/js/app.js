@@ -199,9 +199,10 @@ async function toggleExposed(address, exposed) {
     });
     const dev = allDevices.find(d => d.address === address);
     if (dev) dev.exposed = exposed;
-    // Endpoints are added/removed live; the restart banner only appears
-    // when the bridge couldn't apply the change at runtime.
-    if (result.message !== 'Applied.') {
+    // Endpoints are added/removed live ("Applied.") or were already in the
+    // requested state ("Saved." no-op) — neither needs a restart. The banner
+    // only appears when the bridge couldn't apply the change at runtime.
+    if (/restart/i.test(result.message || '')) {
       document.getElementById('expose-alert').style.display = '';
     }
   } catch (err) {

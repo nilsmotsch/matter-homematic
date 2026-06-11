@@ -41,11 +41,10 @@ export interface HmChannel {
 
 interface CcuConfig {
   host: string;
-  interfaces: {
-    'BidCos-RF'?: { enabled: boolean; port: number };
-    'HmIP-RF'?: { enabled: boolean; port: number };
-    'VirtualDevices'?: { enabled: boolean; port: number };
-  };
+  // Standard CCU interfaces (BidCos-RF 2001, HmIP-RF 2010, VirtualDevices
+  // 9292) plus any additional ipc interfaces registered on the CCU, e.g.
+  // ShellyHM (2121) from the shelly-homematic addon.
+  interfaces: Record<string, { enabled: boolean; port: number } | undefined>;
   callbackPort: number;
   callbackHost?: string;
   regaPort?: number;

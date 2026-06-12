@@ -1,267 +1,186 @@
 # Matter-Homematic Bridge
 
-A Matter bridge for Homematic CCU3/RaspberryMatic that exposes your Homematic devices to Matter-compatible smart home ecosystems like Apple Home, Google Home, Amazon Alexa, and Samsung SmartThings.
+Expose **Homematic / Homematic IP** devices from a **CCU3 / RaspberryMatic** to **Matter** — and through it to Apple Home, Amazon Alexa, Google Home and Samsung SmartThings.
 
-## Overview
+The bridge talks to the CCU over its native XML-RPC interfaces and presents every exposed channel as a Matter endpoint behind a single bridge accessory. Switches, dimmers, blinds (including venetian slat tilt), contact and presence sensors show up as first-class devices in your Matter ecosystem — local-only, no cloud, no Home Assistant in between.
 
-This project provides the same functionality as [hap-homematic](https://github.com/thkl/hap-homematic) but uses the Matter protocol instead of HomeKit. This allows you to integrate your Homematic devices with any Matter-compatible ecosystem, not just Apple HomeKit.
+It does for Matter what [hap-homematic](https://github.com/thkl/hap-homematic) does for HomeKit, and it is the mirror image of the sister project [shelly-homematic](https://github.com/nilsmotsch/shelly-homematic) (Shelly → Homematic). The two work together: Shellys bridged into the CCU by shelly-homematic are re-exported to Matter by this project like any native device.
 
-## Requirements
+> **Status: beta.** The bridge runs stably as an addon on a real CCU3 and is in daily use with Apple Home, but only part of the device matrix has been verified on real hardware — see [What has actually been tested](#what-has-actually-been-tested). Expect rough edges; issue reports with logs are very welcome.
 
-- Node.js 18 or later
-- CCU3, RaspberryMatic, or compatible Homematic central unit
-- Network access to the CCU (ports 2001, 2010, etc.)
-- A Matter-compatible smart home hub (Apple HomePod, Google Nest Hub, Amazon Echo, etc.)
+![Dashboard](screenshots/dashboard.png)
 
-## Installation
+![Devices](screenshots/devices.png)
+
+## Features
+
+- **One bridge, all ecosystems** — Matter multi-admin lets Apple Home, Alexa and Google Home control the same devices simultaneously.
+- **Live state, both directions** — the bridge registers for the CCU's real-time event callbacks; wall-button presses and CCU programs are reflected in your Matter app within a second, and Matter commands are translated to `setValue` calls. A periodic resync covers missed events.
+- **Blinds done right** — lift *and* venetian slat tilt (HmIP-FBL, HmIPW-DRBL4). Tilt support is auto-detected per channel, with a manual per-channel override in the Web UI for actuators whose firmware misreports it (e.g. a roller blind wired to an HmIP-FBL).
+- **HmIP state handling** — commands go to the virtual receiver channel, but state is sourced from the authoritative transmitter channel, so positions stay correct no matter whether a device was operated from Matter, the CCU UI or a wall button.
+- **CCU names and rooms** — channel names and room assignments are read from the CCU (no credentials needed when running as an addon) and used as Matter device labels.
+- **Web UI** (default port 8080) — pairing QR code, per-channel exposure toggles, live device state, tilt override, log viewer, restart button.
+- **Opt-in exposure** — nothing is announced to Matter until you enable it (per channel, or flip the default).
+- **CCU addon packaging** — installable as a regular CCU addon via the WebUI, with a bundled Node.js runtime; runs on the stock eQ-3 CCU3 firmware as well as RaspberryMatic, and survives reboots and firmware updates.
+
+## Supported devices
+
+Mapping works on the Homematic *channel type*, not the device model, so most actuators and sensors of a given class work without explicit support — including wired (HmIPW), classic BidCos and Shellys impersonating BidCos devices via shelly-homematic:
+
+| Homematic channel | Appears in Matter as | Examples |
+|---|---|---|
+| Switch actuator | On/Off plug-in unit | HmIP-PS/PSM/BSM/FSM, HmIPW-DRS8, HM-LC-Sw\* |
+| Dimmer | Dimmable light | HmIP-BDT/PDT/FDT, HM-LC-Dim\* |
+| Blind / shutter actuator | Window covering (lift, plus tilt for venetian) | HmIP-FBL, HmIP-BROLL/FROLL/BBL, HmIPW-DRBL4, HM-LC-Bl\*/Ja\* |
+| Door/window contact | Contact sensor | HmIP-SWDO/SWDM, HM-Sec-SC\* |
+| Motion / presence detector | Occupancy sensor | HmIP-SMI/SMO, HmIP-SPI, HM-Sec-MDIR |
+| Temperature/weather sensor | Temperature sensor | HM-WDS\*, HmIP weather channels |
+| Heating thermostat | Thermostat (heating) | HmIP-eTRV, HmIP-STH/STHD, HM-CC-RT-DN |
+| Door lock | Door lock | HM-Sec-Key (Keymatic), HmIP-DLD |
+
+Multi-channel devices (e.g. the 8-channel HmIPW-DRS8) produce one Matter device per channel; HmIP receiver groups are collapsed so each actuator channel appears once, not three times.
+
+### What has actually been tested
+
+Verified end-to-end on real hardware — eQ-3 CCU3 (firmware 3.87.x), bridge running as a CCU addon, commissioned with **Apple Home**:
+
+| Device | Status | Notes |
+|---|---|---|
+| HmIPW-DRS8 (wired 8-ch switch) | ✅ Tested | Switching from Apple Home, live state when switched from CCU/wall button |
+| HmIPW-DRBL4 (wired 4-ch blind) | ✅ Tested | Lift + venetian tilt, tilt auto-detect (roller vs. venetian channel modes), physical movement verified |
+| HmIP-FBL (blind/shutter actuator) | ✅ Tested | Lift verified; reports tilt even for wired rollers — that's what the per-channel tilt override in the Web UI is for |
+| HmIP-SPI (presence detector) | ✅ Tested | Presence events arrive live as occupancy |
+| HmIP-SWDO (window contact) | ⚠️ Partially | Discovered and mapped on the real CCU; open/close events not yet systematically verified |
+| HmIP-PSM, HmIP-BSM, HmIP-BDT | ⚠️ Simulated only | Verified against the pydevccu test double, not real hardware |
+| Thermostats (HmIP-eTRV/STH, HM-CC-RT-DN) | ❌ Untested | Mapping exists and passes unit tests; no thermostat hardware available — feedback welcome |
+| Door locks, motion (non-SPI), weather sensors | ❌ Untested | Implemented from paramset documentation — feedback welcome |
+| Classic BidCos devices (HM-LC-\*, HM-Sec-\*) | ❌ Untested | Test installation is all-HmIP/HmIPW; the BidCos-RF interface code path is exercised, the device mappings are not |
+
+Ecosystems: **Apple Home** is tested end-to-end (commissioning, control, live state). Alexa, Google Home and SmartThings speak the same Matter standard and are expected to work, but haven't been verified yet.
+
+## Installation (CCU addon)
+
+The recommended setup — the bridge runs directly on the CCU itself:
+
+1. Download `matter-homematic-<version>.tar.gz` from the releases page (or build it yourself with `npm run build:addon`).
+2. On the CCU WebUI: **Einstellungen → Systemsteuerung → Zusatzsoftware**, choose the tarball and install. The CCU reboots.
+3. After the reboot, open the bridge Web UI at `http://<ccu>:8080`. Expose the devices you want under **Devices**.
+4. Pair: the **Dashboard** shows a QR code and manual pairing code — scan it in Apple Home / Google Home / Alexa.
+
+The addon bundles its own Node.js runtime — nothing else needs to be installed, and it runs on the original eQ-3 CCU3 firmware (which ships a Node far too old) as well as RaspberryMatic. Configuration, logs and the Matter fabric (your pairings) live in `/usr/local/etc/config/addons/matter-homematic/` and survive reboots, addon updates and firmware updates.
+
+> **Note:** the bridge's event callback server uses port 9875 — the same default as hap-homematic. If you run both addons, change `ccu.callbackPort` in the config of one of them.
+
+## Pairing and multi-admin
+
+The QR code / manual code shown by the bridge works only for the **first** controller. To add a second ecosystem, the already-paired controller must open a new commissioning window:
+
+- **From Apple Home:** bridge accessory settings → **Turn On Pairing Mode** → enter the generated one-time code in the other app (e.g. Alexa: Devices → + → Add Device → Matter → "device already in use with another app").
+- **From Alexa:** device settings → **Other Assistants and Apps** → Add Another.
+- **From Google Home:** device settings → **Linked Matter apps & services** → Link apps & services.
+
+Each pairing window is time-limited (typically 15 minutes); afterwards the bridge stays connected to all fabrics, including across restarts. The bridge uses Matter's test vendor ID (`0xFFF1`), so every ecosystem shows an "uncertified device" warning during pairing — confirm to proceed. Removing the bridge from one app does not remove it from the others; a full reset (deleting the storage directory) wipes all pairings.
+
+## Standalone usage (without the addon)
+
+Runs anywhere Node 18+ runs, as long as the machine can reach the CCU and your Matter controllers can reach the bridge (same L2 network for mDNS):
 
 ```bash
-# Clone the repository
-git clone https://github.com/homematic-community/matter-homematic.git
+git clone https://github.com/nilsmotsch/matter-homematic.git
 cd matter-homematic
-
-# Install dependencies
 npm install
-
-# Build
-npm run build
+cp config.example.json config.json   # set ccu.host to your CCU's IP
+npm run build && npm start
 ```
+
+When running remotely, CCU names and rooms require CCU WebUI credentials via the `CCU_USER` / `CCU_PASSWORD` environment variables (running as an addon needs no credentials). Without them, devices fall back to raw channel addresses as labels.
 
 ## Configuration
 
-1. Copy the example configuration:
-```bash
-cp config.example.json config.json
-```
+`config.json` — a minimal file just needs the CCU host. The most relevant options:
 
-2. Edit `config.json` and set your CCU IP address:
-```json
+```jsonc
 {
   "ccu": {
-    "host": "192.168.1.100"  // Your CCU IP address
-  }
+    "host": "192.168.1.100",
+    "callbackPort": 9875          // change if hap-homematic is installed
+  },
+  "bridge": {
+    "port": 5540,                 // Matter (UDP)
+    "name": "Matter-Homematic Bridge"
+  },
+  "devices": {
+    "defaultExposed": false,      // opt-in per channel by default
+    "exposed": {},                // managed via the Web UI
+    "tilt": {}                    // per-channel tilt override (Web UI)
+  },
+  "web": { "enabled": true, "port": 8080 },
+  "logging": { "level": "info" }
 }
 ```
 
-## Usage
+Everything under `devices` is normally managed from the Web UI, not by hand. CLI overrides (`--ccu=`, `--port=`, `--passcode=`) and a `CONFIG_PATH` env var are also supported. Secrets never go in config files — credentials are env-vars only.
 
-### Start the bridge
+### Blind tilt: auto-detect and override
 
-```bash
-npm start
-```
+Venetian blinds get both lift and slat-tilt controls in Matter; rollers get lift only. The bridge auto-detects this from the channel's live paramset. One case can't be auto-detected: the HmIP-FBL always reports tilt capability even when a plain roller is physically wired to it. For those channels, set the **Tilt** dropdown in the Web UI device list to *Off* (or *Tilt* to force tilt on). Changing it requires a bridge restart to apply.
 
-Or with command-line options:
-```bash
-npm start -- --ccu=192.168.1.100 --port=5540
-```
-
-### Pairing with your smart home
-
-After starting the bridge, you'll see pairing information in the console:
+## How it works
 
 ```
-========================================
-Matter-Homematic Bridge is ready!
-========================================
-
-To pair with your smart home controller:
-
-  Manual Pairing Code: 20242024
-  Discriminator: 3840
-  Port: 5540
-
-========================================
+Apple Home / Alexa / Google Home / SmartThings
+        │ Matter (mDNS + UDP 5540)
+        ▼
+  MatterBridge (matter.js, bridged endpoints)
+        │
+  DeviceMapper (channel type ↔ Matter device type, value conversion)
+        │
+  CcuConnector (XML-RPC client + event callback server :9875)
+        │ BidCos-RF :2001 / HmIP-RF :2010 / VirtualDevices :9292 / extra ipc interfaces
+        ▼
+  CCU3 / RaspberryMatic ──868 MHz / wired──► Homematic devices
 ```
 
-Use this pairing code in your smart home app:
+The CCU pushes state changes to the bridge's callback server in real time; names and current values are additionally read via the CCU's ReGa scripting engine, which is far more reliable than XML-RPC reads on real firmware. Considerable care went into compatibility quirks of real CCU3 firmware (explicit `Content-Length` on callback responses, answering HMServer's `listDevices` probe, transmitter-vs-receiver state channels) — see `CLAUDE.md` for the full list of hard-won constraints.
 
-- **Apple Home**: Open Home app → Add Accessory → More Options → Enter Setup Code
-- **Google Home**: Open Google Home → + → Set up device → Matter-enabled device
-- **Amazon Alexa**: Open Alexa app → Devices → + → Add Device → Matter
+## Troubleshooting
 
-The web UI dashboard (port 8080) shows the manual pairing code and a scannable
-QR code.
+- **Bridge not discovered during pairing** — controller and bridge must be on the same network/VLAN; mDNS (UDP 5353) and the Matter port (UDP 5540) must not be filtered. Also: the bridge only advertises once **at least one device is exposed** — an empty bridge is invisible by design of matter.js.
+- **Pairing code rejected** — the printed code only works for the first controller; see [Pairing and multi-admin](#pairing-and-multi-admin). After a failed half-pairing, delete the bridge's storage directory to reset commissioning.
+- **No live updates / stale state** — check that nothing else occupies the callback port (hap-homematic also defaults to 9875), and that the CCU can reach the bridge host on that port.
+- **Devices missing from the Web UI list** — the "Hide unnamed channels" filter hides channels that still carry their CCU default name (address-based). Turn it off to see unconfigured channels, e.g. unused relay outputs.
+- **Logs** — Web UI **Log** tab, or `/usr/local/etc/config/addons/matter-homematic/matter-homematic.log` on the CCU.
 
-### Pairing with multiple systems (multi-admin)
+## Limitations
 
-Matter supports multiple controllers (called *fabrics*) on the same bridge —
-Apple Home, Alexa, and Google Home can all control the devices simultaneously.
-But the way you add the second and later controllers is different from the
-first:
-
-- **First controller:** use the bridge's own QR code / manual pairing code
-  (web UI dashboard or log output). This works only while the bridge is
-  *uncommissioned* — after the first pairing, the commissioning window closes
-  and the original code stops being accepted.
-- **Additional controllers:** the *already-paired* controller must open a new
-  commissioning window. The code shown by the bridge will **not** work again.
-  - **From Apple Home:** open the bridge accessory's settings → **Turn On
-    Pairing Mode** → a new one-time setup code is displayed. Enter or scan it
-    in the other ecosystem's app (e.g. Alexa: Devices → + → Add Device →
-    Matter → "device already in use with another app").
-  - **From Alexa:** device settings → **Other Assistants and Apps** → Add
-    Another, then use the generated code in the other app.
-  - **From Google Home:** device settings → **Linked Matter apps & services**
-    → Link apps & services.
-- Each new pairing window is time-limited (typically 15 minutes) and shows a
-  fresh one-time code; the bridge stays connected to all fabrics afterwards,
-  including across restarts.
-- The bridge uses Matter's **test vendor ID** (`0xFFF1`), so every ecosystem
-  shows an "uncertified device" warning during pairing — confirm to proceed.
-- **Removing the bridge** from the *first* app does not free the others: each
-  fabric must be removed from its own app. A full reset (deleting the
-  `.matter-homematic` storage directory) wipes all fabrics and requires
-  re-pairing everywhere.
-
-## Supported Devices
-
-### Switches & Actuators
-- HM-LC-Sw* (Classic switches)
-- HmIP-PS*, HmIP-PSM*, HmIP-FSM* (IP switches)
-
-### Dimmers
-- HM-LC-Dim* (Classic dimmers)
-- HmIP-BDT*, HmIP-PDT*, HmIP-FDT* (IP dimmers)
-
-### Blinds & Shutters
-- HM-LC-Bl*, HM-LC-Ja* (Classic blinds)
-- HmIP-BROLL*, HmIP-FROLL*, HmIP-BBL*, HmIP-FBL* (IP blinds)
-
-### Thermostats
-- HM-CC-RT-DN (Classic thermostat)
-- HmIP-eTRV*, HmIP-STH*, HmIP-STHD* (IP thermostats)
-
-### Sensors
-- HM-Sec-SC*, HmIP-SWDO*, HmIP-SWDM* (Contact sensors)
-- HM-Sec-MDIR*, HmIP-SMI*, HmIP-SMO* (Motion sensors)
-- HM-WDS* (Weather sensors)
-
-### Door Locks
-- HM-Sec-Key (Keymatic)
-- HmIP-DLD (IP door lock)
-
-## Architecture
-
-```
-┌─────────────────────────────────────────┐
-│         Matter Ecosystem                 │
-│  (Apple/Google/Amazon/Samsung)          │
-└─────────────────────────────────────────┘
-                    │
-                    │ Matter Protocol
-                    ▼
-┌─────────────────────────────────────────┐
-│       Matter-Homematic Bridge           │
-│  ┌─────────────┐  ┌─────────────────┐  │
-│  │ Matter.js   │  │ Device Mapper   │  │
-│  │ Server      │◄─┤ (HM ↔ Matter)   │  │
-│  └─────────────┘  └─────────────────┘  │
-│         │                 │             │
-│  ┌──────┴─────────────────┴──────────┐ │
-│  │       CCU Connector (XML-RPC)     │ │
-│  └───────────────────────────────────┘ │
-└─────────────────────────────────────────┘
-                    │
-                    │ XML-RPC
-                    ▼
-┌─────────────────────────────────────────┐
-│        CCU3 / RaspberryMatic            │
-└─────────────────────────────────────────┘
-                    │
-                    │ 868 MHz
-                    ▼
-┌─────────────────────────────────────────┐
-│          Homematic Devices              │
-└─────────────────────────────────────────┘
-```
-
-## CCU Addon Installation
-
-The bridge can be installed directly on RaspberryMatic (CCU3, RaspberryMatic on Pi, OVA, etc.) as a CCU addon. Node.js 18+ is provided by the RaspberryMatic base image — no extra runtime needs to be installed.
-
-### Building the addon tarball
-
-```bash
-npm install
-npm run build:addon
-# → dist-addon/matter-homematic-<version>.tar.gz
-```
-
-The tarball bundles a prod-only `node_modules`, the compiled `dist/`, and the web UI. Because all dependencies are pure JavaScript, the same artifact runs on aarch64, armv7, and x86_64 RaspberryMatic builds.
-
-### Installing on the CCU
-
-1. Open the CCU WebUI → **Einstellungen / Settings** → **Systemsteuerung / System Settings** → **Zusatzsoftware / Additional Software**.
-2. Choose the `matter-homematic-<version>.tar.gz` file and click **Installieren / Install**.
-3. The CCU will reboot on first install. After reboot, a *Matter Homematic* tile appears in the System Settings page.
-4. Click the tile — the WebUI redirects to `http://<ccu-host>:8080/`, which is the bridge's configuration UI.
-5. Edit the CCU host (defaults to `192.168.1.100`), pick which devices to expose, then restart the bridge from the WebUI.
-
-Persistent state (config, Matter fabric, logs) lives at `/usr/local/etc/config/addons/matter-homematic/`. Firmware updates and addon upgrades preserve it; pairings with Matter ecosystems survive across upgrades.
-
-### Test CCU on a Raspberry Pi
-
-To iterate on the addon without touching your production CCU, see [`docs/test-ccu-setup.md`](docs/test-ccu-setup.md) for flashing RaspberryMatic onto a separate SD card.
+- Matter's device-type catalog is narrower than Homematic's — keypress channels, illumination on HmIP-SPI, and CCU programs/variables are not exposed.
+- Matter bridges are limited to roughly 150 endpoints; expose selectively on large installations.
+- Thermostat support is implemented but unverified on hardware (see test status).
 
 ## Development
 
 ```bash
-# Install dependencies
-npm install
-
-# Run in development mode
-npm run dev
-
-# Run tests
-npm test
-
-# Build for production
-npm run build
+npm run dev          # run from source (ts-node, reads ./config.json)
+npm test             # Jest test suite
+npm run lint         # eslint
+npm run build:addon  # build the CCU addon tarball (dist-addon/)
 ```
 
-## Troubleshooting
-
-### Bridge not discovered
-
-- Ensure your Matter controller and the bridge are on the same network
-- Check that port 5540 (UDP) is not blocked by firewall
-- Verify mDNS traffic (port 5353) is allowed
-
-### CCU connection failed
-
-- Verify the CCU IP address is correct
-- Check that XML-RPC ports (2001, 2010) are accessible
-- Ensure CCU firewall allows connections from the bridge
-
-### Devices not appearing
-
-- Check the device is supported (see Supported Devices)
-- Verify the device is working in the CCU WebUI
-- Check the logs for mapping errors
-
-## Limitations
-
-- Matter has a limited set of device types; some Homematic functionality may not be exposed
-- Maximum ~150 devices per bridge (Matter specification limit)
-- Some advanced Homematic features (programs, variables) are not supported
-
-## Contributing
-
-Contributions are welcome! Please read our contributing guidelines and submit pull requests.
-
-## License
-
-MIT License - see LICENSE file for details.
+For end-to-end testing without real hardware there is a [pydevccu](https://github.com/danielperna84/pydevccu)-based test double (`scripts-pydevccu.py`) and notes in `CLAUDE.md`. `scripts/deploy.sh` provides a fast inner loop against a real CCU (pushes the bundle over SSH and restarts the addon); it reads `CCU_HOST`/`CCU_SSH_USER`/`CCU_SSH_PASSWORD` from a gitignored `.env.local`.
 
 ## Acknowledgments
 
-- [matter.js](https://github.com/project-chip/matter.js) - Matter protocol implementation
-- [hap-homematic](https://github.com/thkl/hap-homematic) - Inspiration and reference
-- [RaspberryMatic](https://github.com/jens-maus/RaspberryMatic) - CCU software
+- [matter.js](https://github.com/project-chip/matter.js) — the Matter protocol implementation doing the heavy lifting
+- [hap-homematic](https://github.com/thkl/hap-homematic) — inspiration and reference for talking to the CCU
+- [RaspberryMatic](https://github.com/jens-maus/RaspberryMatic) — CCU software
+- [pydevccu](https://github.com/danielperna84/pydevccu) — CCU test double used in development
 
-## Related Projects
+## Related projects
 
-- [hap-homematic](https://github.com/thkl/hap-homematic) - HomeKit bridge for Homematic
-- [Matterbridge](https://github.com/Luligu/matterbridge) - Generic Matter bridge with plugins
-- [Home Assistant](https://www.home-assistant.io/) - Smart home platform with Homematic & Matter support
+- [shelly-homematic](https://github.com/nilsmotsch/shelly-homematic) — the sister project: Shelly devices → Homematic CCU
+- [hap-homematic](https://github.com/thkl/hap-homematic) — HomeKit bridge for Homematic
+- [Matterbridge](https://github.com/Luligu/matterbridge) — generic Matter bridge with plugins
+
+## License
+
+[MIT](LICENSE)

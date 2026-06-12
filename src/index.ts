@@ -7,6 +7,7 @@
 import { MatterHomematicBridge } from './bridge/MatterBridge';
 import { WebServer } from './web/WebServer';
 import { initLogger, getLogger } from './utils/Logger';
+import { appVersion } from './utils/Version';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -196,7 +197,7 @@ async function main(): Promise<void> {
   const log = getLogger();
 
   log.info('╔═══════════════════════════════════════════╗');
-  log.info('║       Matter-Homematic Bridge v1.0        ║');
+  log.info(`║  Matter-Homematic Bridge v${appVersion()}`.padEnd(44) + '║');
   log.info('║  Expose Homematic devices via Matter      ║');
   log.info('╚═══════════════════════════════════════════╝');
 

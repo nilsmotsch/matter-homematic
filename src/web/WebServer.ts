@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as url from 'url';
 import { getLogger } from '../utils/Logger';
+import { appVersion } from '../utils/Version';
 
 interface WebServerDeps {
   getDevices: () => Map<string, any>;
@@ -182,6 +183,7 @@ export class WebServer {
     const uptimeMs = Date.now() - this.startTime.getTime();
     const bridgeConfig = this.deps.getBridgeConfig();
     return {
+      version: appVersion(),
       bridgeName: bridgeConfig.name,
       uptime: Math.floor(uptimeMs / 1000),
       ccuHost: this.deps.getCcuHost(),
@@ -427,7 +429,9 @@ export class WebServer {
 
       const ext = path.extname(filePath);
       const contentType = MIME_TYPES[ext] || 'application/octet-stream';
-      res.writeHead(200, { 'Content-Type': contentType });
+      // no-cache: browsers otherwise heuristically cache app.js/css and keep
+      // serving stale UI logic long after a deploy (files are tiny, LAN-local)
+      res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'no-cache' });
       res.end(data);
     });
   }

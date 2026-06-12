@@ -81,7 +81,7 @@ async function refreshDashboard() {
     document.getElementById('discriminator').textContent = data.discriminator ?? '--';
 
     // Sidebar version
-    document.getElementById('sidebar-version').textContent = 'v1.0.0';
+    document.getElementById('sidebar-version').textContent = data.version ? 'v' + data.version : '';
 
     // Timestamp
     document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString();

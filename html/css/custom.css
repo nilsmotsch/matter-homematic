@@ -252,6 +252,12 @@ body {
   margin-bottom: 0.75rem;
 }
 
+.interface-row {
+  padding-top: 0.35rem;
+  padding-bottom: 0.35rem;
+  font-size: 0.9rem;
+}
+
 .pairing-label {
   font-size: 0.7rem;
   font-weight: 600;

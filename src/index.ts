@@ -10,6 +10,7 @@ import { initLogger, getLogger } from './utils/Logger';
 import { appVersion } from './utils/Version';
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomInt } from 'crypto';
 
 // When running as a CCU/RaspberryMatic addon, the rc.d script sets
 // MATTER_HOMEMATIC_DATA_DIR to a path that survives firmware and addon
@@ -73,6 +74,26 @@ function resolveConfigPath(): string {
   return './config.json';
 }
 
+// Matter spec 5.1.7.1: setup passcodes are 00000001–99999998 minus a
+// blocklist of trivially guessable values (00000000/99999999 fall outside
+// the randomInt range already).
+const INVALID_PASSCODES = new Set([
+  11111111, 22222222, 33333333, 44444444, 55555555,
+  66666666, 77777777, 88888888, 12345678, 87654321,
+]);
+
+function randomPasscode(): number {
+  for (;;) {
+    const passcode = randomInt(1, 99999999);
+    if (!INVALID_PASSCODES.has(passcode)) return passcode;
+  }
+}
+
+// 12-bit discriminator (Matter spec 5.1.1.5)
+function randomDiscriminator(): number {
+  return randomInt(0, 4096);
+}
+
 /**
  * On first run inside an addon install, seed config.json from the bundled
  * config.example.json so the user has something editable in the WebUI.
@@ -91,9 +112,18 @@ function seedAddonConfigIfMissing(configPath: string): void {
     // Running as an addon means running on the CCU — talk to it locally
     // instead of the example's placeholder IP.
     seed.ccu = { ...(seed.ccu || {}), host: '127.0.0.1' };
+    // Each install/factory reset gets a fresh commissioning identity: the
+    // example's fixed passcode is guessable, and reusing the previous
+    // identity collides with stale accessory caches in controllers that
+    // paired the old fabric ("Accessory not found" in Apple Home).
+    seed.bridge = {
+      ...(seed.bridge || {}),
+      passcode: randomPasscode(),
+      discriminator: randomDiscriminator(),
+    };
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, JSON.stringify(seed, null, 2));
-    getLogger().info(`Seeded config at ${configPath}`);
+    getLogger().info(`Seeded config at ${configPath} (discriminator ${seed.bridge.discriminator})`);
   } catch (err) {
     getLogger().error(`Failed to seed config at ${configPath}: ${err}`);
   }
@@ -174,7 +204,7 @@ async function main(): Promise<void> {
     console.log('  --config=PATH     Path to configuration file');
     console.log('  --ccu=HOST        CCU IP address');
     console.log('  --port=PORT       Matter port (default: 5540)');
-    console.log('  --passcode=CODE   Pairing passcode (default: 20242024)');
+    console.log('  --passcode=CODE   Pairing passcode (default: random, seeded at install)');
     console.log('  --help            Show this help');
     console.log('');
     process.exit(0);
@@ -248,13 +278,17 @@ async function main(): Promise<void> {
     log.error(`Unhandled rejection: ${reason}`);
   });
 
-  const restartBridge = async (): Promise<void> => {
+  const restartBridge = async (beforeReload?: () => void): Promise<void> => {
     log.info('Restarting bridge in-process...');
     try {
       await bridgeRef.bridge.stop();
     } catch (err) {
       log.error(`Error stopping bridge: ${err}`);
     }
+    // Runs while the bridge is fully down — factory reset deletes config
+    // and Matter storage here (deleting storage under a live matter.js
+    // node makes its commits fail and aborts the shutdown half-way).
+    beforeReload?.();
     const freshConfig = loadConfig();
     if (args.ccu) freshConfig.ccu.host = args.ccu;
     if (args.port) freshConfig.bridge.port = parseInt(args.port, 10);
@@ -275,6 +309,7 @@ async function main(): Promise<void> {
       getMatterEndpointCount: () => bridgeRef.bridge.getMatterEndpointCount(),
       getBridgeConfig: () => bridgeRef.bridge.getBridgeConfig(),
       getCcuHost: () => bridgeRef.bridge.getCcuHost(),
+      getCcuInterfaces: () => bridgeRef.bridge.getCcuInterfaces(),
       configPath,
       storagePath: config.bridge.storagePath,
       restartBridge,

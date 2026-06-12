@@ -36,7 +36,70 @@ async function loadDashboard() {
   clearInterval(dashboardTimer);
   await refreshDashboard();
   loadPairingInfo();
+  loadInterfaces();
   dashboardTimer = setInterval(refreshDashboard, 5000);
+}
+
+// --- CCU interfaces (dashboard card) ---
+async function loadInterfaces() {
+  const list = document.getElementById('interfaces-list');
+  if (!list) return;
+  try {
+    const data = await fetchApi('getInterfaces');
+    const names = Object.keys(data.interfaces || {}).sort();
+    list.innerHTML = '';
+    let restartNeeded = false;
+    for (const name of names) {
+      const iface = data.interfaces[name];
+      if (iface.enabled !== iface.active) restartNeeded = true;
+      const row = document.createElement('div');
+      row.className = 'form-check form-switch interface-row';
+      const input = document.createElement('input');
+      input.className = 'form-check-input';
+      input.type = 'checkbox';
+      input.id = 'iface-' + name;
+      input.checked = iface.enabled;
+      input.addEventListener('change', () => toggleInterface(name, input));
+      const label = document.createElement('label');
+      label.className = 'form-check-label';
+      label.htmlFor = input.id;
+      label.textContent = name + ' ';
+      const port = document.createElement('span');
+      port.className = 'mono text-body-secondary';
+      port.textContent = ':' + iface.port;
+      label.appendChild(port);
+      row.appendChild(input);
+      row.appendChild(label);
+      list.appendChild(row);
+    }
+    if (!names.length) list.innerHTML = '<div class="text-body-secondary">No interfaces configured</div>';
+    document.getElementById('interfaces-restart-hint').style.display = restartNeeded ? '' : 'none';
+  } catch (err) {
+    console.error('Failed to load interfaces:', err);
+  }
+}
+
+async function toggleInterface(name, input) {
+  input.disabled = true;
+  try {
+    const result = await fetchApi('setInterfaceEnabled', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, enabled: input.checked }),
+    });
+    input.disabled = false;
+    if (result.restartRequired &&
+        confirm(`${name} ${input.checked ? 'enabled' : 'disabled'}. Restart the bridge now to apply? Matter controllers may briefly lose connection.`)) {
+      await performRestart();
+      return;
+    }
+  } catch (err) {
+    console.error('toggleInterface failed:', err);
+    input.checked = !input.checked;
+    input.disabled = false;
+    alert('Failed to save interface setting. Check the log.');
+  }
+  loadInterfaces();
 }
 
 async function loadPairingInfo() {
@@ -279,8 +342,12 @@ async function factoryReset() {
 }
 
 async function restartBridge() {
-  const btn = document.getElementById('restart-btn');
   if (!confirm('Restart the bridge now? Matter controllers may briefly lose connection.')) return;
+  await performRestart();
+}
+
+async function performRestart() {
+  const btn = document.getElementById('restart-btn');
   const originalHtml = btn.innerHTML;
   btn.disabled = true;
   btn.innerHTML = 'Restarting...';
@@ -304,6 +371,7 @@ async function restartBridge() {
     const ok = await waitForUp();
     if (ok) {
       refreshDashboard();
+      loadInterfaces();
       btn.innerHTML = originalHtml;
       btn.disabled = false;
     } else {

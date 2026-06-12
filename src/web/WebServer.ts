@@ -18,10 +18,14 @@ interface WebServerDeps {
     discriminator: number;
   };
   getCcuHost: () => string;
+  /** Interface set of the *running* bridge (live merged config). */
+  getCcuInterfaces: () => Record<string, { enabled: boolean; port: number } | undefined>;
   // Matter fabric/state storage dir — target of factoryReset
   storagePath: string;
   configPath: string;
-  restartBridge: () => Promise<void>;
+  /** Restart the bridge; `beforeReload` runs between stop and config reload
+   *  (factory reset deletes the persisted state there). */
+  restartBridge: (beforeReload?: () => void) => Promise<void>;
   /** Apply an exposure toggle to the running bridge (add/remove the
    *  endpoint live). Returns true if the topology changed. */
   setDeviceExposed: (address: string, exposed: boolean) => Promise<boolean>;
@@ -134,6 +138,18 @@ export class WebServer {
         this.sendJson(res, 200, this.getConfig());
         break;
 
+      case 'getInterfaces':
+        this.sendJson(res, 200, this.getInterfaces());
+        break;
+
+      case 'setInterfaceEnabled':
+        if (req.method !== 'POST') {
+          this.sendJson(res, 405, { error: 'POST required' });
+          return;
+        }
+        this.handleSetInterfaceEnabled(req, res);
+        break;
+
       case 'setDeviceExposed':
         if (req.method !== 'POST') {
           this.sendJson(res, 405, { error: 'POST required' });
@@ -184,26 +200,27 @@ export class WebServer {
   // uninstall" path): config.json and the Matter fabric storage — every
   // Matter ecosystem must re-pair afterwards.
   private handleFactoryReset(res: http.ServerResponse): void {
-    const deleted: string[] = [];
-    try {
-      if (fs.existsSync(this.deps.configPath)) {
-        fs.unlinkSync(this.deps.configPath);
-        deleted.push(path.basename(this.deps.configPath));
+    this.sendJson(res, 202, { success: true, message: 'Stored data will be deleted. Restarting.' });
+    this.deps.restartBridge(() => {
+      const deleted: string[] = [];
+      try {
+        if (fs.existsSync(this.deps.configPath)) {
+          fs.unlinkSync(this.deps.configPath);
+          deleted.push(path.basename(this.deps.configPath));
+        }
+      } catch (err) {
+        getLogger().error(`Factory reset: failed to delete config: ${err}`);
       }
-    } catch (err) {
-      getLogger().error(`Factory reset: failed to delete config: ${err}`);
-    }
-    try {
-      if (fs.existsSync(this.deps.storagePath)) {
-        fs.rmSync(this.deps.storagePath, { recursive: true, force: true });
-        deleted.push('Matter storage');
+      try {
+        if (fs.existsSync(this.deps.storagePath)) {
+          fs.rmSync(this.deps.storagePath, { recursive: true, force: true });
+          deleted.push('Matter storage');
+        }
+      } catch (err) {
+        getLogger().error(`Factory reset: failed to delete Matter storage: ${err}`);
       }
-    } catch (err) {
-      getLogger().error(`Factory reset: failed to delete Matter storage: ${err}`);
-    }
-    getLogger().warn(`Factory reset via Web UI — deleted: ${deleted.join(', ') || '(nothing)'}`);
-    this.sendJson(res, 202, { success: true, message: `Deleted: ${deleted.join(', ') || 'nothing'}. Restarting.` });
-    this.deps.restartBridge().catch((err) => {
+      getLogger().warn(`Factory reset via Web UI — deleted: ${deleted.join(', ') || '(nothing)'}`);
+    }).catch((err) => {
       getLogger().error(`Restart after factory reset failed: ${err}`);
     });
   }
@@ -362,6 +379,54 @@ export class WebServer {
         defaultExposed: false,
       };
     }
+  }
+
+  /** Configured (file) state wins for `enabled`; `active` is what the
+   *  running bridge loaded — a mismatch means "restart required". */
+  private getInterfaces() {
+    const live = this.deps.getCcuInterfaces();
+    let fileIfaces: Record<string, { enabled?: boolean; port?: number } | undefined> = {};
+    try {
+      fileIfaces = JSON.parse(fs.readFileSync(this.deps.configPath, 'utf-8'))?.ccu?.interfaces || {};
+    } catch {
+      // No config file yet — show the live state alone
+    }
+    const interfaces: Record<string, { port: number; enabled: boolean; active: boolean }> = {};
+    for (const name of new Set([...Object.keys(live), ...Object.keys(fileIfaces)])) {
+      const merged = { ...live[name], ...fileIfaces[name] };
+      interfaces[name] = {
+        port: merged.port ?? 0,
+        enabled: !!merged.enabled,
+        active: !!live[name]?.enabled,
+      };
+    }
+    return { interfaces };
+  }
+
+  private handleSetInterfaceEnabled(req: http.IncomingMessage, res: http.ServerResponse): void {
+    this.readJsonBody(req, res, (payload) => {
+      const { name, enabled } = payload || {};
+      if (typeof name !== 'string' || typeof enabled !== 'boolean') {
+        this.sendJson(res, 400, { error: 'Expected {name: string, enabled: boolean}' });
+        return;
+      }
+      const current = this.getInterfaces().interfaces[name];
+      if (!current) {
+        this.sendJson(res, 404, { error: `Unknown interface: ${name}` });
+        return;
+      }
+      this.writeConfigPatch((config) => {
+        if (!config.ccu) config.ccu = {};
+        if (!config.ccu.interfaces) config.ccu.interfaces = {};
+        config.ccu.interfaces[name] = { enabled, port: current.port };
+      });
+      getLogger().info(`Interface ${name} ${enabled ? 'enabled' : 'disabled'} (takes effect on restart)`);
+      this.sendJson(res, 200, {
+        success: true,
+        restartRequired: enabled !== current.active,
+        message: enabled === current.active ? 'Saved.' : 'Saved. Restart bridge to apply.',
+      });
+    });
   }
 
   private handleSetDeviceExposed(req: http.IncomingMessage, res: http.ServerResponse): void {

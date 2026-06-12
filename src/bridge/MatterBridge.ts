@@ -972,6 +972,11 @@ export class MatterHomematicBridge {
     return this.config.ccu.host;
   }
 
+  /** The interface set the running bridge was started with (merged config). */
+  getCcuInterfaces(): Record<string, { enabled: boolean; port: number } | undefined> {
+    return this.config.ccu.interfaces;
+  }
+
   /**
    * Stop the bridge
    */
@@ -984,7 +989,14 @@ export class MatterHomematicBridge {
     }
 
     if (this.serverNode) {
-      await this.serverNode.close();
+      // A failed matter.js close (e.g. storage dir already gone) must not
+      // skip the CCU disconnect below — leaving the callback server bound
+      // makes the next start fail with EADDRINUSE.
+      try {
+        await this.serverNode.close();
+      } catch (err) {
+        getLogger().error(`Error closing Matter node: ${err}`);
+      }
     }
 
     await this.ccuConnector.disconnect();

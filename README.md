@@ -89,6 +89,10 @@ The QR code / manual code shown by the bridge works only for the **first** contr
 
 Each pairing window is time-limited (typically 15 minutes); afterwards the bridge stays connected to all fabrics, including across restarts. The bridge uses Matter's test vendor ID (`0xFFF1`), so every ecosystem shows an "uncertified device" warning during pairing — confirm to proceed. Removing the bridge from one app does not remove it from the others; a full reset (deleting the storage directory) wipes all pairings.
 
+### Newly exposed devices appear at different speeds per ecosystem
+
+When you expose an additional device in the Web UI, the bridge adds the Matter endpoint immediately — but each controller notices on its own schedule. Controllers holding a **live subscription** (Apple Home does, practically always) see it within seconds. **Alexa** syncs the bridge inventory lazily and may take a long time on its own; trigger it manually with *"Alexa, discover devices"* ("Alexa, entdecke neue Geräte") or via the app (Devices → + → Add Device). If discovery still doesn't surface it, deactivate/reactivate the bridge device in the Alexa app. The same applies to removed devices lingering in a controller after being unexposed.
+
 ## Standalone usage (without the addon)
 
 Runs anywhere Node 18+ runs, as long as the machine can reach the CCU and your Matter controllers can reach the bridge (same L2 network for mDNS):

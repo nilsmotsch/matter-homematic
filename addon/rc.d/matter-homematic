@@ -74,7 +74,7 @@ case "$1" in
     } >/dev/null 2>&1
     ;;
   info)
-    echo "Info: <center><b>Matter Homematic</b><p>Bridges Homematic devices to Matter ecosystems (Apple Home, Google Home, Alexa, SmartThings)</p></center>"
+    echo "Info: <center><b>Matter Homematic</b><p>Bridges Homematic devices to Matter ecosystems (Apple Home, Google Home, Alexa, SmartThings)</p><p><a href=\"https://github.com/nilsmotsch/matter-homematic\" target=\"_blank\">github.com/nilsmotsch/matter-homematic</a></p></center>"
     echo "Name: Matter Homematic"
     echo "Version: ${VER}"
     echo "Operations: uninstall restart"

@@ -286,6 +286,11 @@ export class CcuConnector extends EventEmitter {
       added.push(desc.ADDRESS);
     }
     if (added.length === 0) return;
+    // Let the announcement settle before resolving names: ReGa creates the
+    // device with a template name first, and e.g. shelly-homematic's
+    // auto-rename only lands a few seconds after the announce. Fetching
+    // immediately would freeze the template name into the mapping.
+    await new Promise((resolve) => setTimeout(resolve, 10000));
     try {
       await this.fetchDeviceNames();
     } catch (err) {

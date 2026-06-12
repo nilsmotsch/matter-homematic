@@ -461,6 +461,26 @@ export class CcuConnector extends EventEmitter {
    * `CCU_PASSWORD` env vars). Without credentials or on any failure,
    * logs a warning and leaves addresses as names.
    */
+  /**
+   * Re-fetch names/rooms from ReGa and report channels whose name changed —
+   * used by the periodic resync so CCU renames show up without a restart.
+   */
+  async refreshNames(): Promise<Map<string, string>> {
+    const before = new Map<string, string>();
+    for (const [address, ch] of this.channels) before.set(address, ch.name);
+    try {
+      await this.fetchDeviceNames();
+    } catch (err) {
+      getLogger().warn(`Periodic name refresh failed: ${err}`);
+      return new Map();
+    }
+    const changed = new Map<string, string>();
+    for (const [address, ch] of this.channels) {
+      if (before.get(address) !== ch.name) changed.set(address, ch.name);
+    }
+    return changed;
+  }
+
   private async fetchDeviceNames(): Promise<void> {
     if (!this.config.user) {
       // Without credentials, try the ReGa script endpoint. Modern firmware

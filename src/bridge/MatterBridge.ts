@@ -833,6 +833,28 @@ export class MatterHomematicBridge {
       for (const [src, targets] of this.stateSources) {
         for (const t of targets) sourceOf.set(t, src);
       }
+      // Pick up CCU renames so the Web UI (and future endpoint adds) always
+      // show current names. Live controllers keep their own labels — only
+      // the bridge-side name is updated.
+      try {
+        const renamed = await this.ccuConnector.refreshNames();
+        for (const [address, name] of renamed) {
+          const mapped = this.deviceMapper.getAllMappedDevices().get(address);
+          if (mapped) {
+            getLogger().info(`CCU rename: ${address} -> "${name}"`);
+            mapped.name = name;
+          }
+          const endpoint = this.matterEndpoints.get(address);
+          if (endpoint) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (endpoint as any).set({ bridgedDeviceBasicInformation: { nodeLabel: name.substring(0, 32) } })
+              .catch((err: unknown) => getLogger().debug(`nodeLabel update failed for ${address}: ${err}`));
+          }
+        }
+      } catch (err) {
+        getLogger().debug(`Name refresh failed: ${err}`);
+      }
+
       // One ReGa bulk dump covers all endpoints; getParamset only answers
       // from HMServer's cache (empty after a CCU reboot), so it's the
       // fallback, not the primary source.

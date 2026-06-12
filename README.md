@@ -3,7 +3,7 @@
 Expose **Homematic / Homematic IP** devices from a **CCU3 / RaspberryMatic** to **Matter** — and through it to Apple Home, Amazon Alexa, Google Home and Samsung SmartThings. **All of them at the same time**, from one bridge.
 
 > [!IMPORTANT]
-> **That simultaneous part is the point.** Because Matter supports multiple controllers (*multi-admin*), the same Homematic switch can be in an iPhone user's Apple Home, answer to "Alexa, …" on the Echo in the kitchen, and sit in Google Home on an Android tablet — one bridge, no per-ecosystem plugins, every app always showing the current state. See [Pairing and multi-admin](#pairing-and-multi-admin) for how to connect the second and third ecosystem.
+> **That simultaneous part is the point.** Because Matter supports multiple controllers (*multi-admin*), the same Homematic switch can be in an iPhone user's Apple Home, answer to "Alexa, …" on the Echo in the kitchen, and sit in Google Home on an Android tablet — one bridge, no per-ecosystem plugins, every app always showing the current state. Adding the bridge to the first ecosystem is super straightforward (scan a QR code); adding the next ones is not intuitive at all — but luckily it only needs to be done once. [Pairing and multi-admin](#pairing-and-multi-admin) walks you through it.
 
 The bridge talks to the CCU over its native XML-RPC interfaces and presents every exposed channel as a Matter endpoint behind a single bridge accessory. Switches, dimmers, blinds (including venetian slat tilt), contact and presence sensors show up as first-class devices in your Matter ecosystems — local-only, no cloud, no Home Assistant in between.
 

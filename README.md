@@ -2,7 +2,8 @@
 
 Expose **Homematic / Homematic IP** devices from a **CCU3 / RaspberryMatic** to **Matter** — and through it to Apple Home, Amazon Alexa, Google Home and Samsung SmartThings. **All of them at the same time**, from one bridge.
 
-That simultaneous part is the point: because Matter supports multiple controllers (*multi-admin*), the same Homematic switch can be in an iPhone user's Apple Home, answer to "Alexa, …" on the Echo in the kitchen, and sit in Google Home on an Android tablet — one bridge, no per-ecosystem plugins, every app always showing the current state. See [Pairing and multi-admin](#pairing-and-multi-admin) for how to connect the second and third ecosystem.
+> [!IMPORTANT]
+> **That simultaneous part is the point.** Because Matter supports multiple controllers (*multi-admin*), the same Homematic switch can be in an iPhone user's Apple Home, answer to "Alexa, …" on the Echo in the kitchen, and sit in Google Home on an Android tablet — one bridge, no per-ecosystem plugins, every app always showing the current state. See [Pairing and multi-admin](#pairing-and-multi-admin) for how to connect the second and third ecosystem.
 
 The bridge talks to the CCU over its native XML-RPC interfaces and presents every exposed channel as a Matter endpoint behind a single bridge accessory. Switches, dimmers, blinds (including venetian slat tilt), contact and presence sensors show up as first-class devices in your Matter ecosystems — local-only, no cloud, no Home Assistant in between.
 
@@ -10,6 +11,7 @@ It does for Matter what [hap-homematic](https://github.com/thkl/hap-homematic) d
 
 Note the direction: the bridge exposes **Homematic devices to Matter ecosystems** — it does *not* bring Matter devices into the CCU. The reverse direction (e.g. controlling a Matter plug from a CCU program) is a potential future enhancement, but not implemented today.
 
+> [!NOTE]
 > **Status: beta.** The bridge runs stably as an addon on a real CCU3 and is in daily use with Apple Home and Amazon Alexa, but only part of the device matrix has been verified on real hardware — see [What has actually been tested](#what-has-actually-been-tested). Expect rough edges; issue reports with logs are very welcome.
 
 ![Dashboard](screenshots/dashboard.png)

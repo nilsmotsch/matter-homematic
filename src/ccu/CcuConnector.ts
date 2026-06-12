@@ -248,6 +248,54 @@ export class CcuConnector extends EventEmitter {
   }
 
   /**
+   * Integrate devices announced at runtime (interface newDevices callback)
+   * into the device/channel maps — without this they only appear after a
+   * bridge restart re-runs discovery. Mirrors the per-item logic of
+   * discoverDevices().
+   */
+  private async ingestAnnouncedDevices(interfaceId: string, descriptions: any[]): Promise<void> {
+    const interfaceName = interfaceId.replace(/^matter-homematic-/, '');
+    const added: string[] = [];
+    for (const desc of descriptions) {
+      if (!desc?.ADDRESS) continue;
+      if (!desc.ADDRESS.includes(':')) {
+        if (!this.devices.has(desc.ADDRESS)) {
+          this.devices.set(desc.ADDRESS, {
+            address: desc.ADDRESS,
+            type: desc.TYPE,
+            interface: interfaceName,
+            channels: []
+          });
+        }
+        continue;
+      }
+      if (this.channels.has(desc.ADDRESS)) continue;
+      const channel: HmChannel = {
+        address: desc.ADDRESS,
+        type: desc.TYPE,
+        name: desc.ADDRESS,
+        interface: interfaceName,
+        paramsets: {}
+      };
+      try {
+        channel.paramsets.VALUES = await this.rpcCall(interfaceName, 'getParamset', [desc.ADDRESS, 'VALUES']);
+      } catch { /* some channels have no VALUES paramset */ }
+      this.channels.set(desc.ADDRESS, channel);
+      const parentDevice = this.devices.get(desc.PARENT);
+      if (parentDevice) parentDevice.channels.push(channel);
+      added.push(desc.ADDRESS);
+    }
+    if (added.length === 0) return;
+    try {
+      await this.fetchDeviceNames();
+    } catch (err) {
+      getLogger().warn(`Name lookup after device announce failed: ${err}`);
+    }
+    getLogger().info(`Ingested ${added.length} announced channel(s): ${added.join(', ')}`);
+    this.emit('channelsAdded', added);
+  }
+
+  /**
    * Dispatch one XML-RPC method from the CCU and return its result value.
    */
   private handleCallbackMethod(methodName: string, params: any[]): any {
@@ -267,6 +315,10 @@ export class CcuConnector extends EventEmitter {
       case 'newDevices': {
         const [interfaceId, devices] = params;
         getLogger().info(`New devices on ${interfaceId}: ${devices?.length ?? 0}`);
+        // Ingest asynchronously — the CCU expects an immediate ack.
+        this.ingestAnnouncedDevices(interfaceId, devices || []).catch((err) =>
+          getLogger().error(`Failed to ingest announced devices: ${err}`)
+        );
         this.emit('newDevices', interfaceId, devices);
         return '';
       }

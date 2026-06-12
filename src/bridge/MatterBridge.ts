@@ -704,6 +704,41 @@ export class MatterHomematicBridge {
    * Setup event handlers for CCU -> Matter updates
    */
   private setupEventHandlers(): void {
+    // Channels announced at runtime (e.g. a Shelly exposed in the
+    // shelly-homematic UI): map them so they appear in the Web UI for
+    // exposing — endpoints are only created when the user exposes them.
+    this.ccuConnector.on('channelsAdded', (addresses: string[]) => {
+      const channels = this.ccuConnector.getChannels();
+      const devices = this.ccuConnector.getDevices();
+      for (const address of addresses) {
+        const channel = channels.get(address);
+        if (!channel) continue;
+        const parentDevice = devices.get(address.split(':')[0]);
+        const mapped = this.deviceMapper.mapChannel(
+          address,
+          channel.type,
+          parentDevice?.type || 'Unknown',
+          channel.name,
+          channel.paramsets.VALUES || {},
+          channel.room,
+          this.config.devices?.tilt?.[address]
+        );
+        if (mapped) getLogger().info(`Mapped announced channel ${address} (${mapped.matterDeviceType}) — expose it in the Web UI`);
+      }
+    });
+
+    // Devices removed by their interface (unlearned/unexposed at the source):
+    // remove any live endpoint so Matter stays in sync.
+    this.ccuConnector.on('deleteDevices', (_interfaceId: string, addresses: string[]) => {
+      for (const address of addresses || []) {
+        for (const [chAddress] of this.deviceMapper.getAllMappedDevices()) {
+          if (chAddress === address || chAddress.startsWith(address + ':')) {
+            this.setDeviceExposed(chAddress, false).catch(() => undefined);
+          }
+        }
+      }
+    });
+
     this.ccuConnector.on('deviceEvent', async (event) => {
       const { address, key, value } = event;
 

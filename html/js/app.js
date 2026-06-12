@@ -413,6 +413,11 @@ function filterDeviceTable() {
   const query = document.getElementById('device-search').value.toLowerCase().trim();
   const hideUnnamed = document.getElementById('hide-unnamed')?.checked;
   let list = allDevices;
+  // Show how many channels the toggle actually affects — on fully named
+  // installs it hides nothing, which otherwise looks like a broken control.
+  const unnamedCount = allDevices.length - allDevices.filter(hasCustomName).length;
+  const lbl = document.querySelector('label[for="hide-unnamed"]');
+  if (lbl) lbl.textContent = `Hide unnamed channels (${unnamedCount})`;
   if (hideUnnamed) list = list.filter(hasCustomName);
   if (query) {
     list = list.filter(d =>

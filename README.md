@@ -141,7 +141,7 @@ Apple Home / Alexa / Google Home / SmartThings
   CCU3 / RaspberryMatic ──868 MHz / wired──► Homematic devices
 ```
 
-The CCU pushes state changes to the bridge's callback server in real time; names and current values are additionally read via the CCU's ReGa scripting engine, which is far more reliable than XML-RPC reads on real firmware. Considerable care went into compatibility quirks of real CCU3 firmware (explicit `Content-Length` on callback responses, answering HMServer's `listDevices` probe, transmitter-vs-receiver state channels) — see `CLAUDE.md` for the full list of hard-won constraints.
+The CCU pushes state changes to the bridge's callback server in real time; names and current values are additionally read via the CCU's ReGa scripting engine, which is far more reliable than XML-RPC reads on real firmware. Considerable care went into compatibility quirks of real CCU3 firmware — explicit `Content-Length` on callback responses, answering HMServer's `listDevices` probe, transmitter-vs-receiver state channels — documented in comments where it matters in the code. A more detailed design overview lives in [`docs/architecture.md`](docs/architecture.md).
 
 ## Troubleshooting
 
@@ -166,7 +166,7 @@ npm run lint         # eslint
 npm run build:addon  # build the CCU addon tarball (dist-addon/)
 ```
 
-For end-to-end testing without real hardware there is a [pydevccu](https://github.com/danielperna84/pydevccu)-based test double (`scripts-pydevccu.py`) and notes in `CLAUDE.md`. `scripts/deploy.sh` provides a fast inner loop against a real CCU (pushes the bundle over SSH and restarts the addon); it reads `CCU_HOST`/`CCU_SSH_USER`/`CCU_SSH_PASSWORD` from a gitignored `.env.local`.
+For end-to-end testing without real hardware there is a [pydevccu](https://github.com/danielperna84/pydevccu)-based test double (`scripts-pydevccu.py`); `@matter/nodejs-shell` works well as a test commissioner. For setting up an isolated test CCU on a spare Raspberry Pi, see [`docs/test-ccu-setup.md`](docs/test-ccu-setup.md). `scripts/deploy.sh` provides a fast inner loop against a real CCU (pushes the bundle over SSH and restarts the addon); it reads `CCU_HOST`/`CCU_SSH_USER`/`CCU_SSH_PASSWORD` from a gitignored `.env.local`.
 
 ## Acknowledgments
 

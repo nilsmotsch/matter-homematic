@@ -10,3 +10,9 @@ build/
 build-cache/
 dist-addon/
 *.img.gz
+.DS_Store
+
+# internal / local-only files (not part of the public repo)
+CLAUDE.md
+docs/hw-test-plan.md
+scripts-*.ts

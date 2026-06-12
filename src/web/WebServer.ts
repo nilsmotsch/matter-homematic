@@ -17,6 +17,8 @@ interface WebServerDeps {
     discriminator: number;
   };
   getCcuHost: () => string;
+  // Matter fabric/state storage dir — target of factoryReset
+  storagePath: string;
   configPath: string;
   restartBridge: () => Promise<void>;
   /** Apply an exposure toggle to the running bridge (add/remove the
@@ -163,9 +165,46 @@ export class WebServer {
         this.handleRestartBridge(res);
         break;
 
+      case 'factoryReset':
+        if (req.method !== 'POST') {
+          this.sendJson(res, 405, { error: 'POST required' });
+          return;
+        }
+        this.handleFactoryReset(res);
+        break;
+
       default:
         this.sendJson(res, 404, { error: `Unknown method: ${method}` });
     }
+  }
+
+  // Deletes everything the addon persists (uninstall deliberately preserves
+  // the config dir, so this is the explicit "start over / purge before
+  // uninstall" path): config.json and the Matter fabric storage — every
+  // Matter ecosystem must re-pair afterwards.
+  private handleFactoryReset(res: http.ServerResponse): void {
+    const deleted: string[] = [];
+    try {
+      if (fs.existsSync(this.deps.configPath)) {
+        fs.unlinkSync(this.deps.configPath);
+        deleted.push(path.basename(this.deps.configPath));
+      }
+    } catch (err) {
+      getLogger().error(`Factory reset: failed to delete config: ${err}`);
+    }
+    try {
+      if (fs.existsSync(this.deps.storagePath)) {
+        fs.rmSync(this.deps.storagePath, { recursive: true, force: true });
+        deleted.push('Matter storage');
+      }
+    } catch (err) {
+      getLogger().error(`Factory reset: failed to delete Matter storage: ${err}`);
+    }
+    getLogger().warn(`Factory reset via Web UI — deleted: ${deleted.join(', ') || '(nothing)'}`);
+    this.sendJson(res, 202, { success: true, message: `Deleted: ${deleted.join(', ') || 'nothing'}. Restarting.` });
+    this.deps.restartBridge().catch((err) => {
+      getLogger().error(`Restart after factory reset failed: ${err}`);
+    });
   }
 
   private handleRestartBridge(res: http.ServerResponse): void {

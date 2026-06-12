@@ -245,6 +245,25 @@ async function loadLog() {
   setLogAutoRefresh(document.getElementById('log-autorefresh').checked);
 }
 
+async function factoryReset() {
+  const warning =
+    'Factory reset deletes ALL stored data:\n\n' +
+    '\u2022 bridge configuration (config.json)\n' +
+    '\u2022 Matter fabric storage (pairings!)\n\n' +
+    'Every Matter ecosystem (Apple Home, Google Home, \u2026) must be ' +
+    're-paired afterwards. Use this to start over or before uninstalling ' +
+    'the addon for good.\n\nContinue?';
+  if (!confirm(warning)) return;
+  try {
+    const result = await fetchApi('factoryReset', { method: 'POST' });
+    alert(result.message || 'Stored data deleted. Bridge restarting.');
+    setTimeout(() => window.location.reload(), 3000);
+  } catch (err) {
+    console.error('factoryReset failed:', err);
+    alert('Factory reset failed. Check the log.');
+  }
+}
+
 async function restartBridge() {
   const btn = document.getElementById('restart-btn');
   if (!confirm('Restart the bridge now? Matter controllers may briefly lose connection.')) return;
@@ -369,7 +388,7 @@ function renderState(d) {
 }
 
 // A channel is "unnamed" if the CCU never had a user-assigned label —
-// in that case ReGa returns a template like "HmIPW-DRS8 3014F711…:11"
+// in that case ReGa returns a template like "HmIPW-DRS8 3014F711A0…:11"
 // which always contains the channel's own address.
 function hasCustomName(d) {
   if (!d.name || !d.address) return false;

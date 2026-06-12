@@ -275,6 +275,7 @@ async function main(): Promise<void> {
       getBridgeConfig: () => bridgeRef.bridge.getBridgeConfig(),
       getCcuHost: () => bridgeRef.bridge.getCcuHost(),
       configPath,
+      storagePath: config.bridge.storagePath,
       restartBridge,
       setDeviceExposed: (address, exposed) => bridgeRef.bridge.setDeviceExposed(address, exposed),
       getPairingInfo: () => bridgeRef.bridge.getPairingInfo(),

@@ -27,11 +27,11 @@
     "alexa",
     "smarthings"
   ],
-  "author": "Homematic Community",
+  "author": "Nils Motsch",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/homematic-community/matter-homematic"
+    "url": "https://github.com/nilsmotsch/matter-homematic"
   },
   "engines": {
     "node": ">=18.0.0"

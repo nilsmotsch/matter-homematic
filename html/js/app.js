@@ -201,10 +201,10 @@ async function toggleExposed(address, exposed) {
     if (dev) dev.exposed = exposed;
     // Endpoints are added/removed live ("Applied.") or were already in the
     // requested state ("Saved." no-op) — neither needs a restart. The banner
-    // only appears when the bridge couldn't apply the change at runtime.
-    if (/restart/i.test(result.message || '')) {
-      document.getElementById('expose-alert').style.display = '';
-    }
+    // only appears when the bridge couldn't apply the change at runtime,
+    // and a subsequent successful live apply clears it again.
+    document.getElementById('expose-alert').style.display =
+      /restart/i.test(result.message || '') ? '' : 'none';
   } catch (err) {
     console.error('Failed to toggle exposure:', err);
     alert('Failed to save. Check bridge logs.');

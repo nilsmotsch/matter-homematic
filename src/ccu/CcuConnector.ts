@@ -254,6 +254,11 @@ export class CcuConnector extends EventEmitter {
    * discoverDevices().
    */
   private async ingestAnnouncedDevices(interfaceId: string, descriptions: any[]): Promise<void> {
+    // rfd/HMServer re-announce their FULL device list on every init() — at
+    // startup that burst must be ignored: initial discovery owns it (incl.
+    // the HmIP receiver-group collapsing in MatterBridge). Ingest only
+    // handles genuinely new announcements arriving at runtime.
+    if (!this.discoveryComplete) return;
     const interfaceName = interfaceId.replace(/^matter-homematic-/, '');
     const added: string[] = [];
     for (const desc of descriptions) {

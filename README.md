@@ -1,8 +1,10 @@
 # Matter-Homematic Bridge
 
-Expose **Homematic / Homematic IP** devices from a **CCU3 / RaspberryMatic** to **Matter** — and through it to Apple Home, Amazon Alexa, Google Home and Samsung SmartThings.
+Expose **Homematic / Homematic IP** devices from a **CCU3 / RaspberryMatic** to **Matter** — and through it to Apple Home, Amazon Alexa, Google Home and Samsung SmartThings. **All of them at the same time**, from one bridge.
 
-The bridge talks to the CCU over its native XML-RPC interfaces and presents every exposed channel as a Matter endpoint behind a single bridge accessory. Switches, dimmers, blinds (including venetian slat tilt), contact and presence sensors show up as first-class devices in your Matter ecosystem — local-only, no cloud, no Home Assistant in between.
+That simultaneous part is the point: because Matter supports multiple controllers (*multi-admin*), the same Homematic switch can be in an iPhone user's Apple Home, answer to "Alexa, …" on the Echo in the kitchen, and sit in Google Home on an Android tablet — one bridge, no per-ecosystem plugins, every app always showing the current state. See [Pairing and multi-admin](#pairing-and-multi-admin) for how to connect the second and third ecosystem.
+
+The bridge talks to the CCU over its native XML-RPC interfaces and presents every exposed channel as a Matter endpoint behind a single bridge accessory. Switches, dimmers, blinds (including venetian slat tilt), contact and presence sensors show up as first-class devices in your Matter ecosystems — local-only, no cloud, no Home Assistant in between.
 
 It does for Matter what [hap-homematic](https://github.com/thkl/hap-homematic) does for HomeKit, and it is the mirror image of the sister project [shelly-homematic](https://github.com/nilsmotsch/shelly-homematic) (Shelly → Homematic). The two work together: Shellys bridged into the CCU by shelly-homematic are re-exported to Matter by this project like any native device.
 
@@ -16,7 +18,7 @@ Note the direction: the bridge exposes **Homematic devices to Matter ecosystems*
 
 ## Features
 
-- **One bridge, all ecosystems** — Matter multi-admin lets Apple Home, Alexa and Google Home control the same devices simultaneously.
+- **One bridge, all ecosystems simultaneously** — the primary use case: Matter multi-admin lets Apple Home, Alexa and Google Home control the same devices side by side, with consistent live state everywhere. Apple Home + Alexa is verified in daily use.
 - **Live state, both directions** — the bridge registers for the CCU's real-time event callbacks; wall-button presses and CCU programs are reflected in your Matter app within a second, and Matter commands are translated to `setValue` calls. A periodic resync covers missed events.
 - **Blinds done right** — lift *and* venetian slat tilt (HmIP-FBL, HmIPW-DRBL4). Tilt support is auto-detected per channel, with a manual per-channel override in the Web UI for actuators whose firmware misreports it (e.g. a roller blind wired to an HmIP-FBL).
 - **HmIP state handling** — commands go to the virtual receiver channel, but state is sourced from the authoritative transmitter channel, so positions stay correct no matter whether a device was operated from Matter, the CCU UI or a wall button.

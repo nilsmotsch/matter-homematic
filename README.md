@@ -194,6 +194,10 @@ For end-to-end testing without real hardware there is a [pydevccu](https://githu
 - [hap-homematic](https://github.com/thkl/hap-homematic) — HomeKit bridge for Homematic
 - [Matterbridge](https://github.com/Luligu/matterbridge) — generic Matter bridge with plugins
 
+## Disclaimer
+
+This is an independent community project, developed in spare time. It is **not** affiliated with, endorsed by, or supported by eQ-3 AG (Homematic, Homematic IP), the Connectivity Standards Alliance (Matter), Apple, Amazon, Google, Samsung, or any other vendor. All product names, logos, and trademarks are property of their respective owners and are used here for identification only. The software is provided as-is, without warranty of any kind — use at your own risk.
+
 ## License
 
 [MIT](LICENSE)

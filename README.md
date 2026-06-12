@@ -6,6 +6,8 @@ The bridge talks to the CCU over its native XML-RPC interfaces and presents ever
 
 It does for Matter what [hap-homematic](https://github.com/thkl/hap-homematic) does for HomeKit, and it is the mirror image of the sister project [shelly-homematic](https://github.com/nilsmotsch/shelly-homematic) (Shelly → Homematic). The two work together: Shellys bridged into the CCU by shelly-homematic are re-exported to Matter by this project like any native device.
 
+Note the direction: the bridge exposes **Homematic devices to Matter ecosystems** — it does *not* bring Matter devices into the CCU. The reverse direction (e.g. controlling a Matter plug from a CCU program) is a potential future enhancement, but not implemented today.
+
 > **Status: beta.** The bridge runs stably as an addon on a real CCU3 and is in daily use with Apple Home and Amazon Alexa, but only part of the device matrix has been verified on real hardware — see [What has actually been tested](#what-has-actually-been-tested). Expect rough edges; issue reports with logs are very welcome.
 
 ![Dashboard](screenshots/dashboard.png)
@@ -155,6 +157,7 @@ The CCU pushes state changes to the bridge's callback server in real time; names
 
 ## Limitations
 
+- **One direction only:** Homematic → Matter. Matter devices do not show up in the CCU; the bridge contains no Matter controller. (Possible future enhancement.)
 - Matter's device-type catalog is narrower than Homematic's — keypress channels, illumination on HmIP-SPI, and CCU programs/variables are not exposed.
 - Matter bridges are limited to roughly 150 endpoints; expose selectively on large installations.
 - Thermostat support is implemented but unverified on hardware (see test status).

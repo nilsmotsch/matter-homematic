@@ -7,7 +7,7 @@ Expose **Homematic / Homematic IP** devices from a **CCU3 / RaspberryMatic** to 
 
 The bridge talks to the CCU over its native XML-RPC interfaces and presents every exposed channel as a Matter endpoint behind a single bridge accessory. Switches, dimmers, blinds (including venetian slat tilt), contact and presence sensors show up as first-class devices in your Matter ecosystems — local-only, no cloud, no Home Assistant in between.
 
-It does for Matter what [hap-homematic](https://github.com/thkl/hap-homematic) does for HomeKit, and it is the mirror image of the sister project [shelly-homematic](https://github.com/nilsmotsch/shelly-homematic) (Shelly → Homematic). The two work together: Shellys bridged into the CCU by shelly-homematic are re-exported to Matter by this project like any native device.
+It does for Matter what [hap-homematic](https://github.com/thkl/hap-homematic) does for HomeKit, and it is the mirror image of the sister project [shelly-homematic](https://github.com/nilsmotsch/shelly-homematic) (Shelly → Homematic). The two work together: Shellys bridged into the CCU by shelly-homematic are re-exported to Matter by this project like any native device. That combination puts the same Shelly in CCU programs **and** in Apple Home/Alexa simultaneously — on the official Shelly firmware, with no reflashing and no Shelly cloud.
 
 Note the direction: the bridge exposes **Homematic devices to Matter ecosystems** — it does *not* bring Matter devices into the CCU. The reverse direction (e.g. controlling a Matter plug from a CCU program) is a potential future enhancement, but not implemented today.
 

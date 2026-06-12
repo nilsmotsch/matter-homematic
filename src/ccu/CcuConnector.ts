@@ -68,6 +68,8 @@ export class CcuConnector extends EventEmitter {
   private channels: Map<string, HmChannel> = new Map();
   private connected: boolean = false;
   private pingIntervals: Map<string, ReturnType<typeof setInterval>> = new Map();
+  private failedInterfaces: Map<string, number> = new Map();
+  private retryTimer: ReturnType<typeof setInterval> | null = null;
   /** ReGa port that answered the last datapoint dump (avoids re-probing). */
   private regaValuesPort?: number;
 
@@ -103,15 +105,50 @@ export class CcuConnector extends EventEmitter {
     // Start callback server first
     await this.startCallbackServer();
 
-    // Connect to each enabled interface
+    // Connect to each enabled interface. One unreachable interface (e.g.
+    // ShellyHM when the shelly-homematic addon isn't installed yet) must not
+    // take the whole bridge down — log it and keep retrying in the background;
+    // once it appears, its devices arrive via its init()-triggered re-announce.
     for (const [name, settings] of Object.entries(this.config.interfaces)) {
       if (settings?.enabled) {
-        await this.connectInterface(name, settings.port);
+        try {
+          await this.connectInterface(name, settings.port);
+        } catch (err) {
+          getLogger().warn(`Interface ${name} unreachable (${err}) — will retry every 30s`);
+          this.clients.delete(name);
+          this.failedInterfaces.set(name, settings.port);
+        }
       }
     }
+    this.startInterfaceRetry();
 
     this.connected = true;
     this.emit('connected');
+  }
+
+  // Periodically retry interfaces that were down at startup (or lost later).
+  private startInterfaceRetry(): void {
+    if (this.retryTimer || this.failedInterfaces.size === 0) return;
+    this.retryTimer = setInterval(async () => {
+      for (const [name, port] of this.failedInterfaces) {
+        try {
+          await this.connectInterface(name, port);
+          this.failedInterfaces.delete(name);
+          getLogger().info(`Interface ${name} is back — discovering its devices`);
+          try { await this.discoverDevices(); } catch (err) {
+            getLogger().warn(`Re-discovery after ${name} reconnect failed: ${err}`);
+          }
+          this.emit('interfaceReconnected', name);
+        } catch {
+          // still down — keep retrying
+          this.clients.delete(name);
+        }
+      }
+      if (this.failedInterfaces.size === 0 && this.retryTimer) {
+        clearInterval(this.retryTimer);
+        this.retryTimer = null;
+      }
+    }, 30000);
   }
 
   /**

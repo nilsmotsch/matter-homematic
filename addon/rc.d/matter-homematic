@@ -102,7 +102,9 @@ EOF
     rm -rf ${ADDON_DIR}
     rm -f ${CONFIG_DIR}/rc.d/${ADDON_NAME}
     rm -rf ${CONFIG_DIR}/addons/www/${ADDON_NAME}
-    rm -rf ${ADDONCFG_DIR}
+    # ${ADDONCFG_DIR} is deliberately PRESERVED: it holds config.json and the
+    # Matter fabric storage — deleting it would force re-pairing with every
+    # Matter ecosystem on reinstall. Full purge: rm -rf ${ADDONCFG_DIR}.
     ;;
   *)
     echo "Usage: $0 {start|stop|restart|info|uninstall}" >&2

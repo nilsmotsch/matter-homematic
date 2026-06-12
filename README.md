@@ -69,6 +69,8 @@ The recommended setup — the bridge runs directly on the CCU itself:
 
 The addon bundles its own Node.js runtime — nothing else needs to be installed, and it runs on the original eQ-3 CCU3 firmware (which ships a Node far too old) as well as RaspberryMatic. Configuration, logs and the Matter fabric (your pairings) live in `/usr/local/etc/config/addons/matter-homematic/` and survive reboots, addon updates and firmware updates.
 
+Uninstalling the addon deliberately **preserves** that directory, so an uninstall→reinstall cycle keeps your configuration and — most importantly — the Matter fabric: no re-pairing needed. To wipe everything (forces re-pairing with every ecosystem), use the **Factory Reset** button in the Web UI dashboard before uninstalling.
+
 > **Note:** the bridge's event callback server uses port 9875 — the same default as hap-homematic. If you run both addons, change `ccu.callbackPort` in the config of one of them.
 
 ## Pairing and multi-admin

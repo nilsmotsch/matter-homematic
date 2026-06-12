@@ -8,6 +8,7 @@ import { appVersion } from '../utils/Version';
 interface WebServerDeps {
   getDevices: () => Map<string, any>;
   getChannels: () => Map<string, any>;
+  isDiscoveryComplete: () => boolean;
   isCcuConnected: () => boolean;
   getMatterEndpointCount: () => number;
   getBridgeConfig: () => {
@@ -258,7 +259,7 @@ export class WebServer {
         tiltOverride,
       });
     }
-    return { devices, count: devices.length, defaultExposed };
+    return { devices, count: devices.length, defaultExposed , loading: !this.deps.isDiscoveryComplete() };
   }
 
   private readExposureConfig(): { exposed: Record<string, boolean>; defaultExposed: boolean; tilt: Record<string, boolean> } {

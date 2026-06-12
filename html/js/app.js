@@ -105,10 +105,24 @@ let allDevices = [];
 let allChannels = [];
 let unmappedLoaded = false;
 
+let devicesLoadingTimer = null;
+
 async function loadDevices() {
   try {
     const data = await fetchApi('getDevices');
     allDevices = data.devices || [];
+    if (data.loading && allDevices.length === 0) {
+      // CCU discovery still running (can take a minute on large installs)
+      document.getElementById('devices-total').textContent = 'discovering…';
+      document.getElementById('device-tbody').innerHTML =
+        '<tr><td colspan="8" class="text-center text-body-secondary py-4">' +
+        '<span class="spinner-border spinner-border-sm" style="margin-right:8px"></span>' +
+        'Discovering CCU devices…</td></tr>';
+      clearTimeout(devicesLoadingTimer);
+      devicesLoadingTimer = setTimeout(loadDevices, 2000);
+      return;
+    }
+    clearTimeout(devicesLoadingTimer);
     document.getElementById('devices-total').textContent = `${allDevices.length} devices`;
     const defToggle = document.getElementById('default-exposed');
     if (defToggle) defToggle.checked = data.defaultExposed !== false;

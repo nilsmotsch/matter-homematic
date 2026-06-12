@@ -270,6 +270,7 @@ async function main(): Promise<void> {
     webServer = new WebServer(config.web.port || 8080, {
       getDevices: () => bridgeRef.bridge.getDeviceMapper().getAllMappedDevices(),
       getChannels: () => bridgeRef.bridge.getCcuConnector().getChannels(),
+      isDiscoveryComplete: () => bridgeRef.bridge.getCcuConnector().isDiscoveryComplete(),
       isCcuConnected: () => bridgeRef.bridge.getCcuConnector().isConnected(),
       getMatterEndpointCount: () => bridgeRef.bridge.getMatterEndpointCount(),
       getBridgeConfig: () => bridgeRef.bridge.getBridgeConfig(),

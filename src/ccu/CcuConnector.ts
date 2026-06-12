@@ -69,6 +69,9 @@ export class CcuConnector extends EventEmitter {
   private connected: boolean = false;
   private pingIntervals: Map<string, ReturnType<typeof setInterval>> = new Map();
   private failedInterfaces: Map<string, number> = new Map();
+  // False until the first full discovery pass finished — lets the Web UI show
+  // a loading state instead of "No devices found" during startup.
+  private discoveryComplete = false;
   private retryTimer: ReturnType<typeof setInterval> | null = null;
   /** ReGa port that answered the last datapoint dump (avoids re-probing). */
   private regaValuesPort?: number;
@@ -387,6 +390,7 @@ export class CcuConnector extends EventEmitter {
       getLogger().info(`Seeded VALUES for ${seeded} channels from ReGa`);
     }
 
+    this.discoveryComplete = true;
     return this.channels;
   }
 
@@ -928,6 +932,10 @@ export class CcuConnector extends EventEmitter {
   /**
    * Check if connected
    */
+  isDiscoveryComplete(): boolean {
+    return this.discoveryComplete;
+  }
+
   isConnected(): boolean {
     return this.connected;
   }

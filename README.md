@@ -68,7 +68,7 @@ Ecosystems: **Apple Home** and **Amazon Alexa** are tested end-to-end (commissio
 
 The recommended setup — the bridge runs directly on the CCU itself:
 
-1. Download the addon tarball: [**matter-homematic-0.9.0.tar.gz**](https://github.com/nilsmotsch/matter-homematic/releases/download/v0.9.0/matter-homematic-0.9.0.tar.gz) (always newest: [latest release](https://github.com/nilsmotsch/matter-homematic/releases/latest)) — or build it yourself with `npm run build:addon`.
+1. Download the addon tarball: [**matter-homematic-0.10.0.tar.gz**](https://github.com/nilsmotsch/matter-homematic/releases/download/v0.10.0/matter-homematic-0.10.0.tar.gz) (always newest: [latest release](https://github.com/nilsmotsch/matter-homematic/releases/latest)) — or build it yourself with `npm run build:addon`.
 2. On the CCU WebUI: **Einstellungen → Systemsteuerung → Zusatzsoftware**, choose the tarball and install. The CCU reboots.
 3. After the reboot, open the bridge Web UI at `http://<ccu>:8080`. Expose the devices you want under **Devices**.
 4. Pair: the **Dashboard** shows a QR code and manual pairing code — scan it in Apple Home / Google Home / Alexa.

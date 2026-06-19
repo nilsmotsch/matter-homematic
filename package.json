@@ -1,6 +1,6 @@
 {
   "name": "matter-homematic",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "A Matter bridge for Homematic CCU3/RaspberryMatic - expose your Homematic devices to Matter ecosystems",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

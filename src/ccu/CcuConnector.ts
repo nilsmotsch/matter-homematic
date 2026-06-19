@@ -39,6 +39,18 @@ export interface HmChannel {
   };
 }
 
+/**
+ * A CCU "system variable" (Systemvariable). Only boolean ones (ReGa
+ * ValueType ivtBinary = 2, i.e. logic/alarm variables) are modelled — they
+ * map cleanly to a Matter On/Off switch. The numeric `id` is ReGa's stable
+ * object id and is used as the key everywhere (names can change).
+ */
+export interface HmSystemVariable {
+  id: string;
+  name: string;
+  value: boolean;
+}
+
 interface CcuConfig {
   host: string;
   // Standard CCU interfaces (BidCos-RF 2001, HmIP-RF 2010, VirtualDevices
@@ -67,6 +79,10 @@ export class CcuConnector extends EventEmitter {
   private devices: Map<string, HmDevice> = new Map();
   private channels: Map<string, HmChannel> = new Map();
   private connected: boolean = false;
+  /** Boolean system variables, keyed by ReGa id. Populated/refreshed via
+   *  ReGa (they live in the logic layer, not on any XML-RPC interface, and
+   *  never push events — so they have to be polled). */
+  private sysVars: Map<string, HmSystemVariable> = new Map();
   private pingIntervals: Map<string, ReturnType<typeof setInterval>> = new Map();
   private failedInterfaces: Map<string, number> = new Map();
   // False until the first full discovery pass finished — lets the Web UI show
@@ -758,6 +774,112 @@ export class CcuConnector extends EventEmitter {
       return result;
     }
     return null;
+  }
+
+  /**
+   * Read all boolean (logic/alarm) system variables via ReGa, refresh the
+   * local cache, and return them keyed by id. Returns null when no ReGa
+   * endpoint is reachable (e.g. pydevccu) — callers then skip sysvar support.
+   *
+   * Boolean variables are ReGa ValueType ivtBinary (== 2); `.Value()` for
+   * those renders as the JSON literal `true`/`false`.
+   */
+  async fetchSystemVariables(): Promise<Map<string, HmSystemVariable> | null> {
+    const script =
+      'string id; boolean f = true;' +
+      'Write("[");' +
+      'foreach (id, dom.GetObject(ID_SYSTEM_VARIABLES).EnumUsedIDs()) {' +
+      '  object sv = dom.GetObject(id);' +
+      '  if (sv) {' +
+      '    if (sv.ValueType() == 2) {' +
+      '      if (f) { f = false; } else { Write(","); }' +
+      // Value is quoted: some special booleans (e.g. ${sysVarAlarmZone1})
+      // render an empty .Value(), which would produce invalid JSON
+      // (`"value":`) and break the parse of the whole list.
+      '      Write("{\\"id\\":" # id # ",\\"name\\":\\"" # sv.Name().UriEncode() # "\\",\\"value\\":\\"" # sv.Value() # "\\"}");' +
+      '    }' +
+      '  }' +
+      '}' +
+      'Write("]");';
+
+    const ports = this.regaValuesPort !== undefined
+      ? [this.regaValuesPort]
+      : [8181, this.config.regaPort ?? 80];
+    for (const port of ports) {
+      let parsed: Array<{ id: number | string; name: string; value: string }>;
+      try {
+        const raw = await this.regaScript(script, port);
+        parsed = JSON.parse(raw);
+      } catch {
+        continue;
+      }
+      const result = new Map<string, HmSystemVariable>();
+      for (const entry of parsed) {
+        const id = String(entry.id);
+        if (!id) continue;
+        // Value comes back as a quoted string: 'true'/'false' (or '1'/'0'
+        // on some firmware); an empty string means unset → false.
+        const v = String(entry.value);
+        result.set(id, {
+          id,
+          name: this.decodeRega(String(entry.name || '')) || id,
+          value: v === 'true' || v === '1',
+        });
+      }
+      this.sysVars = result;
+      this.regaValuesPort = port;
+      return result;
+    }
+    return null;
+  }
+
+  /**
+   * Re-read system variable values and return only those whose value
+   * changed since the last cache (used by the bridge's poll loop — sysvars
+   * have no event channel). Names are refreshed too but not reported here.
+   */
+  async refreshSystemVariables(): Promise<Map<string, boolean>> {
+    const before = new Map<string, boolean>();
+    for (const [id, sv] of this.sysVars) before.set(id, sv.value);
+    const fresh = await this.fetchSystemVariables();
+    const changed = new Map<string, boolean>();
+    if (!fresh) return changed;
+    for (const [id, sv] of fresh) {
+      if (before.get(id) !== sv.value) changed.set(id, sv.value);
+    }
+    return changed;
+  }
+
+  getSystemVariables(): Map<string, HmSystemVariable> {
+    return this.sysVars;
+  }
+
+  /**
+   * Set a boolean system variable via ReGa (`State()`). The id is taken
+   * from config/Web UI input, so it's validated as digits-only before being
+   * spliced into the script.
+   */
+  async setSystemVariable(id: string, value: boolean): Promise<void> {
+    if (!/^\d+$/.test(id)) {
+      throw new Error(`Invalid system variable id: ${id}`);
+    }
+    const script = `object sv = dom.GetObject(${id}); if (sv) { sv.State(${value ? 'true' : 'false'}); }`;
+    const ports = this.regaValuesPort !== undefined
+      ? [this.regaValuesPort]
+      : [8181, this.config.regaPort ?? 80];
+    let lastErr: unknown;
+    for (const port of ports) {
+      try {
+        await this.regaScript(script, port);
+        const sv = this.sysVars.get(id);
+        if (sv) sv.value = value;
+        this.regaValuesPort = port;
+        return;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw new Error(`Failed to set system variable ${id}: ${lastErr}`);
   }
 
   /**

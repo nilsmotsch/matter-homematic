@@ -54,6 +54,17 @@
         </a>
       </li>
       <li class="nav-item">
+        <a class="nav-link" href="#" data-tab="sysvars" onclick="switchTab('sysvars', this)">
+          <svg class="nav-icon" width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <path d="M3 5h12M3 9h12M3 13h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <circle cx="6" cy="5" r="1.6" fill="currentColor"/>
+            <circle cx="12" cy="9" r="1.6" fill="currentColor"/>
+            <circle cx="6" cy="13" r="1.6" fill="currentColor"/>
+          </svg>
+          System Variables
+        </a>
+      </li>
+      <li class="nav-item">
         <a class="nav-link" href="#" data-tab="log" onclick="switchTab('log', this)">
           <svg class="nav-icon" width="18" height="18" viewBox="0 0 18 18" fill="none">
             <rect x="2" y="1" width="14" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/>
@@ -291,6 +302,54 @@
                     </tbody>
                   </table>
                 </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+
+        <!-- System Variables Tab -->
+        <div id="tab-sysvars" class="tab-content-pane" style="display:none">
+          <div class="content-header">
+            <h1>System Variables</h1>
+            <span class="device-count-badge" id="sysvars-total"></span>
+          </div>
+
+          <div class="alert alert-info filter-alert">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style="margin-right:8px;vertical-align:-2px">
+              <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="8" y1="7" x2="8" y2="11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <circle cx="8" cy="4.5" r="0.75" fill="currentColor"/>
+            </svg>
+            Boolean CCU system variables can be exposed as Matter On/Off switches. Changes made on the CCU are polled every ~30&nbsp;seconds.
+          </div>
+
+          <div class="card mb-4">
+            <div class="card-body">
+              <div class="devices-toolbar">
+                <div class="search-wrapper">
+                  <svg class="search-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/>
+                    <line x1="11" y1="11" x2="14" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                  </svg>
+                  <input type="text" class="form-control search-input" id="sysvar-search" placeholder="Search system variables..." oninput="filterSysvarTable()">
+                </div>
+              </div>
+
+              <div class="table-responsive">
+                <table class="table table-hover device-table" id="sysvar-table">
+                  <thead>
+                    <tr>
+                      <th>Expose</th>
+                      <th>Name</th>
+                      <th>ID</th>
+                      <th>Value</th>
+                    </tr>
+                  </thead>
+                  <tbody id="sysvar-tbody">
+                    <tr><td colspan="4" class="text-center text-body-secondary py-4">Loading system variables...</td></tr>
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>

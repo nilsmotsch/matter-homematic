@@ -44,6 +44,9 @@
     "tilt": {},
     "customMappings": []
   },
+  "systemVariables": {
+    "exposed": {}
+  },
   "web": {
     "enabled": false,
     "port": 8080

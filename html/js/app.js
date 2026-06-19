@@ -24,6 +24,7 @@ function switchTab(tabId, el) {
   // Load data for tab
   if (tabId === 'dashboard') loadDashboard();
   if (tabId === 'devices') loadDevices();
+  if (tabId === 'sysvars') loadSysvars();
   if (tabId === 'log') loadLog();
   // The log polls itself; stop when the user navigates away
   if (tabId !== 'log') stopLogAutoRefresh();
@@ -285,6 +286,84 @@ async function toggleExposed(address, exposed) {
   } catch (err) {
     console.error('Failed to toggle exposure:', err);
     alert('Failed to save. Check bridge logs.');
+  }
+}
+
+// --- System Variables ---
+let allSysvars = [];
+
+async function loadSysvars() {
+  try {
+    const data = await fetchApi('getSystemVariables');
+    allSysvars = data.sysvars || [];
+    document.getElementById('sysvars-total').textContent = `${allSysvars.length} variables`;
+    filterSysvarTable();
+  } catch (err) {
+    console.error('Failed to load system variables:', err);
+    document.getElementById('sysvar-tbody').innerHTML =
+      '<tr><td colspan="4" class="text-center text-body-secondary py-4">Failed to load system variables</td></tr>';
+  }
+}
+
+function filterSysvarTable() {
+  const query = document.getElementById('sysvar-search').value.toLowerCase().trim();
+  let list = allSysvars;
+  if (query) {
+    list = list.filter(sv =>
+      (sv.name || '').toLowerCase().includes(query) ||
+      String(sv.id || '').includes(query)
+    );
+  }
+  renderSysvarTable(list);
+  const total = allSysvars.length;
+  const badge = document.getElementById('sysvars-total');
+  if (badge) {
+    badge.textContent = list.length === total
+      ? `${total} variables`
+      : `${list.length} of ${total} variables`;
+  }
+}
+
+function renderSysvarTable(sysvars) {
+  const tbody = document.getElementById('sysvar-tbody');
+  if (!sysvars.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="text-center text-body-secondary py-4">No boolean system variables found</td></tr>';
+    return;
+  }
+  tbody.innerHTML = sysvars.map(sv => {
+    const id = esc(String(sv.id));
+    const checked = sv.exposed ? 'checked' : '';
+    const pill = `<span class="state-pill ${sv.value ? 'on' : 'off'}"><span class="dot"></span>${sv.value ? 'True' : 'False'}</span>`;
+    return `
+    <tr>
+      <td>
+        <div class="form-check form-switch expose-switch">
+          <input class="form-check-input" type="checkbox" ${checked}
+                 data-sysvar="${id}"
+                 onchange="toggleSysvarExposed('${id}', this.checked)">
+        </div>
+      </td>
+      <td class="fw-medium">${esc(sv.name || sv.id)}</td>
+      <td class="mono">${id}</td>
+      <td>${pill}</td>
+    </tr>
+  `;
+  }).join('');
+}
+
+async function toggleSysvarExposed(id, exposed) {
+  try {
+    await fetchApi('setSystemVariableExposed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, exposed }),
+    });
+    const sv = allSysvars.find(s => String(s.id) === String(id));
+    if (sv) sv.exposed = exposed;
+  } catch (err) {
+    console.error('Failed to toggle system variable exposure:', err);
+    alert('Failed to save. Check bridge logs.');
+    loadSysvars();
   }
 }
 

@@ -53,6 +53,10 @@ function buildDefaultConfig() {
       defaultExposed: false,
       exposed: {} as Record<string, boolean>
     },
+    systemVariables: {
+      // Opt-in per ReGa id (the Web UI's System Variables tab toggles these).
+      exposed: {} as Record<string, boolean>
+    },
     web: {
       // The CCU WebUI tile redirects to :8080, so we enable the web UI
       // by default when running as an addon.
@@ -314,6 +318,8 @@ async function main(): Promise<void> {
       storagePath: config.bridge.storagePath,
       restartBridge,
       setDeviceExposed: (address, exposed) => bridgeRef.bridge.setDeviceExposed(address, exposed),
+      getSystemVariables: () => bridgeRef.bridge.getSystemVariables(),
+      setSystemVariableExposed: (id, exposed) => bridgeRef.bridge.setSystemVariableExposed(id, exposed),
       getPairingInfo: () => bridgeRef.bridge.getPairingInfo(),
       logFilePath: config.logging?.file || '',
     });

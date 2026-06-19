@@ -34,9 +34,11 @@ import {
   OccupancySensingServer,
 } from "@matter/main/behaviors";
 import { VendorId, QrCode } from "@matter/main/types";
-import { CcuConnector, HmChannel } from '../ccu/CcuConnector';
+import { CcuConnector, HmChannel, HmSystemVariable } from '../ccu/CcuConnector';
 import { DeviceMapper, MappedDevice, MatterDeviceType } from '../devices/DeviceMapper';
 import { getLogger } from '../utils/Logger';
+import * as fs from 'fs';
+import * as path from 'path';
 
 interface BridgeConfig {
   name: string;
@@ -71,6 +73,11 @@ interface FullConfig {
      *  which always reports LEVEL_2 numeric regardless of physical install). */
     tilt?: Record<string, boolean>;
   };
+  /** CCU system variables exposed as Matter switches. Opt-in per ReGa id,
+   *  mirroring the per-device exposure model. */
+  systemVariables?: {
+    exposed?: Record<string, boolean>;
+  };
 }
 
 export class MatterHomematicBridge {
@@ -89,11 +96,35 @@ export class MatterHomematicBridge {
    *  MIRRORED_KEYS events are stale command echoes and must be ignored. */
   private mirroredReceivers: Set<string> = new Set();
   private resyncTimer?: NodeJS.Timeout;
+  /** Exposed system variables → their Matter OnOff endpoint, keyed by ReGa id. */
+  private sysVarEndpoints: Map<string, Endpoint> = new Map();
+  /** Last value pushed to each sysvar endpoint — echo suppression for the
+   *  poll-driven onOff updates (same pattern as device currentState). */
+  private sysVarState: Map<string, boolean> = new Map();
+  private sysVarPollTimer?: NodeJS.Timeout;
+  /** Stable Matter endpoint numbers, keyed by endpoint id (e.g.
+   *  hm-SHELLY0008-1, sysvar-1234). matter.js allocates numbers from a
+   *  monotonic counter and frees them on Endpoint.delete(), so an
+   *  unexpose→re-expose (or an interface restart that removes/re-adds the
+   *  endpoint) would hand a device a *new* number. Some controllers — notably
+   *  Amazon Alexa — cache endpoint numbers and never reconcile by uniqueId, so
+   *  a renumber makes that device permanently "unresponsive" there (Apple and
+   *  Google follow the change via uniqueId and stay fine). We pin each
+   *  endpoint's number for its whole lifecycle by reusing the captured value.
+   *  Persisted inside the Matter storage dir so a factory reset (which re-pairs
+   *  every fabric anyway) clears it too. */
+  private endpointNumbers: Map<string, number> = new Map();
+  private endpointNumbersPath?: string;
 
   constructor(config: FullConfig) {
     this.config = config;
     this.ccuConnector = new CcuConnector(config.ccu);
     this.deviceMapper = new DeviceMapper();
+
+    if (config.bridge.storagePath) {
+      this.endpointNumbersPath = path.join(config.bridge.storagePath, 'endpoint-numbers.json');
+      this.loadEndpointNumbers();
+    }
 
     // matter.js logs at debug by default, which floods the log file and
     // drowns out the bridge's own entries. Must be set before any matter.js
@@ -184,9 +215,13 @@ export class MatterHomematicBridge {
     // Add bridged devices
     await this.addBridgedDevices();
 
+    // Add exposed CCU system variables as Matter switches
+    await this.addSystemVariables();
+
     // Setup event handlers
     this.setupEventHandlers();
     this.startStateResync();
+    this.startSysVarPoll();
 
     // Start the server
     await this.serverNode!.start();
@@ -267,6 +302,64 @@ export class MatterHomematicBridge {
   }
 
   /**
+   * Load the persisted endpoint-number map (id → Matter endpoint number).
+   * A missing or unreadable file just means "no pins yet" — numbers are
+   * recaptured on the next add.
+   */
+  private loadEndpointNumbers(): void {
+    if (!this.endpointNumbersPath) return;
+    try {
+      const obj = JSON.parse(fs.readFileSync(this.endpointNumbersPath, 'utf-8'));
+      for (const [id, n] of Object.entries(obj)) {
+        if (typeof n === 'number' && Number.isInteger(n) && n > 0) {
+          this.endpointNumbers.set(id, n);
+        }
+      }
+      getLogger().info(`Loaded ${this.endpointNumbers.size} pinned endpoint number(s)`);
+    } catch {
+      // First run or unreadable — start empty and recapture below.
+    }
+  }
+
+  private persistEndpointNumbers(): void {
+    if (!this.endpointNumbersPath) return;
+    try {
+      const obj: Record<string, number> = {};
+      for (const [id, n] of this.endpointNumbers) obj[id] = n;
+      fs.mkdirSync(path.dirname(this.endpointNumbersPath), { recursive: true });
+      fs.writeFileSync(this.endpointNumbersPath, JSON.stringify(obj, null, 2));
+    } catch (err) {
+      getLogger().warn(`Failed to persist endpoint numbers: ${err}`);
+    }
+  }
+
+  /**
+   * Add a bridged endpoint to the aggregator with a stable Matter endpoint
+   * number. If we've seen this endpoint id before, pin its previous number so
+   * a delete/re-add never renumbers it (see `endpointNumbers`); otherwise
+   * capture whatever matter.js assigns for next time. Existing installs are
+   * undisturbed: on the first run the map is empty, matter.js reuses its own
+   * per-id stored numbers, and we simply record them.
+   */
+  private async addEndpointWithStableNumber(endpoint: Endpoint): Promise<void> {
+    const id = endpoint.id;
+    const stored = id ? this.endpointNumbers.get(id) : undefined;
+    if (stored !== undefined) {
+      try {
+        endpoint.number = stored;
+      } catch (err) {
+        getLogger().warn(`Could not pin endpoint number ${stored} for ${id}: ${err}`);
+      }
+    }
+    await this.aggregator!.add(endpoint);
+    const assigned = endpoint.maybeNumber;
+    if (id && typeof assigned === 'number' && this.endpointNumbers.get(id) !== assigned) {
+      this.endpointNumbers.set(id, assigned);
+      this.persistEndpointNumbers();
+    }
+  }
+
+  /**
    * Add all mapped devices as bridged devices
    */
   private async addBridgedDevices(): Promise<void> {
@@ -285,7 +378,7 @@ export class MatterHomematicBridge {
       try {
         endpoint = await this.createMatterEndpoint(device);
         if (!endpoint) continue;
-        await this.aggregator!.add(endpoint);
+        await this.addEndpointWithStableNumber(endpoint);
         added = true;
         this.matterEndpoints.set(address, endpoint);
         getLogger().info(`Added bridged device: ${device.name} (${device.matterDeviceType})`);
@@ -458,7 +551,7 @@ export class MatterHomematicBridge {
             currentPositionTiltPercent100ths: tiltPos,
             targetPositionTiltPercent100ths: tiltPos,
             operationalStatus: { global: 0, lift: 0, tilt: 0 },
-            endProductType: 5, // TiltOnlyInteriorBlind / venetian
+            endProductType: 12, // InteriorVenetianBlind (lift + tilt); 5 was CellularShade (no tilt) — inconsistent with type 8
           },
         },
       );
@@ -892,7 +985,7 @@ export class MatterHomematicBridge {
   }
 
   getMatterEndpointCount(): number {
-    return this.matterEndpoints.size;
+    return this.matterEndpoints.size + this.sysVarEndpoints.size;
   }
 
   /**
@@ -941,7 +1034,7 @@ export class MatterHomematicBridge {
       }
       const endpoint = await this.createMatterEndpoint(device);
       if (!endpoint) return false;
-      await this.aggregator.add(endpoint);
+      await this.addEndpointWithStableNumber(endpoint);
       this.matterEndpoints.set(address, endpoint);
       getLogger().info(`Added bridged device at runtime: ${device.name} (${device.matterDeviceType})`);
       return true;
@@ -954,6 +1047,164 @@ export class MatterHomematicBridge {
     await existing.delete();
     getLogger().info(`Removed bridged device at runtime: ${address}`);
     return true;
+  }
+
+  /**
+   * Whether a system variable should be exposed over Matter. Opt-in per
+   * ReGa id (no global default — sysvar lists are often large and most are
+   * internal helpers users don't want in their smart home app).
+   */
+  private isSysVarExposed(id: string): boolean {
+    return !!this.config.systemVariables?.exposed?.[id];
+  }
+
+  /**
+   * Discover boolean system variables from the CCU and add a Matter On/Off
+   * switch for each exposed one. No-op (with a debug note) when ReGa is
+   * unreachable, e.g. pydevccu — sysvars only exist in the logic layer.
+   */
+  private async addSystemVariables(): Promise<void> {
+    let sysVars: Map<string, HmSystemVariable> | null;
+    try {
+      sysVars = await this.ccuConnector.fetchSystemVariables();
+    } catch (err) {
+      getLogger().warn(`System variable discovery failed: ${err}`);
+      return;
+    }
+    if (!sysVars) {
+      getLogger().debug('No ReGa endpoint for system variables — skipping');
+      return;
+    }
+    getLogger().info(`Discovered ${sysVars.size} boolean system variable(s)`);
+
+    let added = 0;
+    for (const [id, sv] of sysVars) {
+      if (!this.isSysVarExposed(id)) continue;
+      try {
+        const endpoint = this.createSysVarEndpoint(sv);
+        await this.addEndpointWithStableNumber(endpoint);
+        this.sysVarEndpoints.set(id, endpoint);
+        added++;
+        getLogger().info(`Added system variable switch: ${sv.name} (id ${id})`);
+      } catch (err) {
+        getLogger().error(`Failed to add system variable ${id} (${sv.name}):`, err);
+      }
+    }
+    getLogger().info(`Added ${added} system variable switch(es)`);
+  }
+
+  /**
+   * Create a Matter On/Off switch endpoint backed by a boolean system
+   * variable. Matter writes go to the CCU via ReGa; CCU-side changes arrive
+   * through the poll loop (sysvars have no event channel).
+   */
+  private createSysVarEndpoint(sv: HmSystemVariable): Endpoint {
+    const id = `sysvar-${sv.id}`;
+    this.sysVarState.set(sv.id, sv.value);
+    const endpoint = new Endpoint(
+      OnOffPlugInUnitDevice.with(BridgedDeviceBasicInformationServer),
+      {
+        id,
+        bridgedDeviceBasicInformation: {
+          vendorName: "Homematic Community",
+          productName: "System Variable",
+          nodeLabel: sv.name.substring(0, 32),
+          serialNumber: `sysvar-${sv.id}`,
+          reachable: true,
+        },
+        onOff: { onOff: sv.value },
+      }
+    );
+
+    endpoint.events.onOff.onOff$Changed.on(async (value) => {
+      // Echo from a poll-driven update (we wrote currentState before setting
+      // the attribute) — don't bounce it back to the CCU.
+      if (this.sysVarState.get(sv.id) === value) return;
+      this.sysVarState.set(sv.id, value);
+      getLogger().info(`Matter -> CCU: system variable ${sv.id} (${sv.name}) = ${value}`);
+      try {
+        await this.ccuConnector.setSystemVariable(sv.id, value);
+      } catch (err) {
+        getLogger().error(`Failed to set system variable ${sv.id}: ${err}`);
+      }
+    });
+
+    return endpoint;
+  }
+
+  /**
+   * System variables emit no XML-RPC events, so poll ReGa periodically and
+   * push any CCU-side changes to the exposed switch endpoints.
+   */
+  private startSysVarPoll(): void {
+    if (this.sysVarEndpoints.size === 0) return;
+    const POLL_MS = 30 * 1000;
+    this.sysVarPollTimer = setInterval(async () => {
+      let changed: Map<string, boolean>;
+      try {
+        changed = await this.ccuConnector.refreshSystemVariables();
+      } catch (err) {
+        getLogger().debug(`System variable poll failed: ${err}`);
+        return;
+      }
+      for (const [id, value] of changed) {
+        const endpoint = this.sysVarEndpoints.get(id);
+        if (!endpoint) continue;
+        if (this.sysVarState.get(id) === value) continue;
+        // Set tracked value before the attribute so the $Changed echo is
+        // suppressed instead of being written back to the CCU.
+        this.sysVarState.set(id, value);
+        getLogger().info(`CCU -> Matter: system variable ${id} = ${value}`);
+        try {
+          const state: any = { onOff: { onOff: value } };
+          await endpoint.set(state);
+        } catch (err) {
+          getLogger().error(`Failed to update system variable endpoint ${id}: ${err}`);
+        }
+      }
+    }, POLL_MS);
+  }
+
+  /**
+   * Add or remove a single system-variable switch at runtime (Web UI
+   * toggle), mirroring setDeviceExposed. Patches the in-memory config and
+   * starts the poll loop when the first sysvar becomes exposed.
+   * Returns true when the live topology actually changed.
+   */
+  async setSystemVariableExposed(id: string, exposed: boolean): Promise<boolean> {
+    if (!this.config.systemVariables) this.config.systemVariables = {};
+    if (!this.config.systemVariables.exposed) this.config.systemVariables.exposed = {};
+    this.config.systemVariables.exposed[id] = exposed;
+    if (!this.aggregator) return false;
+
+    const existing = this.sysVarEndpoints.get(id);
+    if (exposed) {
+      if (existing) return false;
+      const sv = this.ccuConnector.getSystemVariables().get(id);
+      if (!sv) {
+        getLogger().warn(`Cannot expose system variable ${id}: not found`);
+        return false;
+      }
+      const endpoint = this.createSysVarEndpoint(sv);
+      await this.addEndpointWithStableNumber(endpoint);
+      this.sysVarEndpoints.set(id, endpoint);
+      getLogger().info(`Added system variable switch at runtime: ${sv.name} (id ${id})`);
+      // Begin polling now that there is at least one sysvar to watch.
+      if (!this.sysVarPollTimer) this.startSysVarPoll();
+      return true;
+    }
+
+    if (!existing) return false;
+    this.sysVarEndpoints.delete(id);
+    this.sysVarState.delete(id);
+    await existing.delete();
+    getLogger().info(`Removed system variable switch at runtime: ${id}`);
+    return true;
+  }
+
+  /** System variables for the Web UI (id, name, current value). */
+  getSystemVariables(): HmSystemVariable[] {
+    return Array.from(this.ccuConnector.getSystemVariables().values());
   }
 
   getDeviceMapper(): DeviceMapper {
@@ -986,6 +1237,11 @@ export class MatterHomematicBridge {
     if (this.resyncTimer) {
       clearInterval(this.resyncTimer);
       this.resyncTimer = undefined;
+    }
+
+    if (this.sysVarPollTimer) {
+      clearInterval(this.sysVarPollTimer);
+      this.sysVarPollTimer = undefined;
     }
 
     if (this.serverNode) {

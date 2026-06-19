@@ -29,6 +29,10 @@ interface WebServerDeps {
   /** Apply an exposure toggle to the running bridge (add/remove the
    *  endpoint live). Returns true if the topology changed. */
   setDeviceExposed: (address: string, exposed: boolean) => Promise<boolean>;
+  /** Boolean CCU system variables (id, name, current value) for the UI. */
+  getSystemVariables: () => Array<{ id: string; name: string; value: boolean }>;
+  /** Apply a system-variable exposure toggle to the running bridge. */
+  setSystemVariableExposed: (id: string, exposed: boolean) => Promise<boolean>;
   /** Matter pairing codes incl. ASCII QR; null until the server is up. */
   getPairingInfo: () => {
     manualPairingCode: string;
@@ -156,6 +160,18 @@ export class WebServer {
           return;
         }
         this.handleSetDeviceExposed(req, res);
+        break;
+
+      case 'getSystemVariables':
+        this.sendJson(res, 200, this.getSystemVariables());
+        break;
+
+      case 'setSystemVariableExposed':
+        if (req.method !== 'POST') {
+          this.sendJson(res, 405, { error: 'POST required' });
+          return;
+        }
+        this.handleSetSystemVariableExposed(req, res);
         break;
 
       case 'setDefaultExposed':
@@ -447,6 +463,43 @@ export class WebServer {
         })
         .catch((err) => {
           getLogger().error(`Live exposure toggle for ${address} failed: ${err}`);
+          this.sendJson(res, 200, { success: true, message: 'Saved. Restart bridge to apply.' });
+        });
+    });
+  }
+
+  private getSystemVariables() {
+    let exposed: Record<string, boolean> = {};
+    try {
+      exposed = JSON.parse(fs.readFileSync(this.deps.configPath, 'utf-8'))?.systemVariables?.exposed || {};
+    } catch {
+      // No config yet — nothing exposed
+    }
+    const sysvars = this.deps.getSystemVariables()
+      .map((sv) => ({ ...sv, exposed: !!exposed[sv.id] }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return { sysvars, count: sysvars.length };
+  }
+
+  private handleSetSystemVariableExposed(req: http.IncomingMessage, res: http.ServerResponse): void {
+    this.readJsonBody(req, res, (payload) => {
+      const { id, exposed } = payload || {};
+      if (typeof id !== 'string' || typeof exposed !== 'boolean') {
+        this.sendJson(res, 400, { error: 'Expected {id: string, exposed: boolean}' });
+        return;
+      }
+      this.writeConfigPatch((config) => {
+        if (!config.systemVariables) config.systemVariables = {};
+        if (!config.systemVariables.exposed) config.systemVariables.exposed = {};
+        config.systemVariables.exposed[id] = exposed;
+      });
+      this.deps.setSystemVariableExposed(id, exposed)
+        .then((changed) => {
+          getLogger().info(`System variable ${id} exposure set to ${exposed}${changed ? ' (applied live)' : ''}`);
+          this.sendJson(res, 200, { success: true, message: changed ? 'Applied.' : 'Saved.' });
+        })
+        .catch((err) => {
+          getLogger().error(`Live exposure toggle for system variable ${id} failed: ${err}`);
           this.sendJson(res, 200, { success: true, message: 'Saved. Restart bridge to apply.' });
         });
     });

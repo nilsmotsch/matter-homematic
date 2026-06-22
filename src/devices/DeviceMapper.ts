@@ -20,7 +20,6 @@ export enum MatterDeviceType {
   ContactSensor = 'ContactSensor',
   OccupancySensor = 'OccupancySensor',
   LightSensor = 'LightSensor',
-  DoorLock = 'DoorLock',
   GenericSwitch = 'GenericSwitch',
   Unknown = 'Unknown'
 }
@@ -318,38 +317,12 @@ const CHANNEL_TYPE_MAPPINGS: Record<string, DeviceTypeMapping> = {
         toHomematic: (v) => v / 100
       }
     }
-  },
-
-  // Door Locks
-  'KEYMATIC': {
-    matterType: MatterDeviceType.DoorLock,
-    clusters: ['DoorLock'],
-    valueMap: {
-      STATE: {
-        hmKey: 'STATE',
-        matterCluster: 'doorLock',
-        matterAttribute: 'lockState',
-        // HM: true = unlocked, Matter: 1 = locked, 2 = unlocked
-        toMatter: (v) => v ? 2 : 1,
-        toHomematic: (v) => v === 2
-      }
-    }
-  },
-  'DOOR_LOCK_STATE_TRANSMITTER': {
-    matterType: MatterDeviceType.DoorLock,
-    clusters: ['DoorLock'],
-    valueMap: {
-      LOCK_STATE: {
-        hmKey: 'LOCK_STATE',
-        matterCluster: 'doorLock',
-        matterAttribute: 'lockState',
-        // HM: 0=unknown, 1=locked, 2=unlocked
-        // Matter: 0=not_fully_locked, 1=locked, 2=unlocked
-        toMatter: (v) => v,
-        toHomematic: (v) => v
-      }
-    }
   }
+
+  // Door locks (KEYMATIC / HmIP-DLD) are intentionally not mapped — the current
+  // attribute-write approach doesn't match Matter's command-driven DoorLock
+  // model, so it was removed rather than ship something non-functional. See
+  // README "Unsupported devices".
 };
 
 // Device type patterns for automatic detection
@@ -375,8 +348,7 @@ const DEVICE_TYPE_PATTERNS: Array<{ pattern: RegExp; channelType: string }> = [
   { pattern: /^HmIP-SMI/, channelType: 'MOTIONDETECTOR_TRANSCEIVER' },
   { pattern: /^HmIP-SMO/, channelType: 'MOTIONDETECTOR_TRANSCEIVER' },
   { pattern: /^HmIP-SPI/, channelType: 'MOTIONDETECTOR_TRANSCEIVER' },
-  { pattern: /^HmIP-DLD/, channelType: 'DOOR_LOCK_STATE_TRANSMITTER' },
-  
+
   // Classic Homematic devices
   { pattern: /^HM-LC-Sw/, channelType: 'SWITCH' },
   { pattern: /^HM-LC-Dim/, channelType: 'DIMMER' },
@@ -388,8 +360,7 @@ const DEVICE_TYPE_PATTERNS: Array<{ pattern: RegExp; channelType: string }> = [
   { pattern: /^HM-Sec-RHS/, channelType: 'SHUTTER_CONTACT' },
   { pattern: /^HM-Sec-MDIR/, channelType: 'MOTION_DETECTOR' },
   { pattern: /^HM-Sen-MDIR/, channelType: 'MOTION_DETECTOR' },
-  { pattern: /^HM-WDS/, channelType: 'WEATHER' },
-  { pattern: /^HM-Sec-Key/, channelType: 'KEYMATIC' }
+  { pattern: /^HM-WDS/, channelType: 'WEATHER' }
 ];
 
 export interface MappedDevice {

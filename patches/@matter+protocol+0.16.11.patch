@@ -1,0 +1,36 @@
+diff --git a/node_modules/@matter/protocol/dist/cjs/mdns/MdnsClient.js b/node_modules/@matter/protocol/dist/cjs/mdns/MdnsClient.js
+index 7762e00..a9cd088 100644
+--- a/node_modules/@matter/protocol/dist/cjs/mdns/MdnsClient.js
++++ b/node_modules/@matter/protocol/dist/cjs/mdns/MdnsClient.js
+@@ -309,9 +309,13 @@ class MdnsClient {
+    * @param entries
+    */
+   #sortServerEntries(entries) {
++    const preferIpv4 = process.env.MATTER_HM_PREFER_IPV4 === "1";
+     return entries.sort((a, b) => {
+       const aIsIPv6 = (0, import_general.isIPv6)(a.ip);
+       const bIsIPv6 = (0, import_general.isIPv6)(b.ip);
++      if (preferIpv4 && aIsIPv6 !== bIsIPv6) {
++        return aIsIPv6 ? 1 : -1;
++      }
+       if (aIsIPv6 && !bIsIPv6) {
+         return -1;
+       } else if (!aIsIPv6 && bIsIPv6) {
+diff --git a/node_modules/@matter/protocol/dist/esm/mdns/MdnsClient.js b/node_modules/@matter/protocol/dist/esm/mdns/MdnsClient.js
+index bdc743c..d54fc50 100644
+--- a/node_modules/@matter/protocol/dist/esm/mdns/MdnsClient.js
++++ b/node_modules/@matter/protocol/dist/esm/mdns/MdnsClient.js
+@@ -321,9 +321,13 @@ class MdnsClient {
+    * @param entries
+    */
+   #sortServerEntries(entries) {
++    const preferIpv4 = process.env.MATTER_HM_PREFER_IPV4 === "1";
+     return entries.sort((a, b) => {
+       const aIsIPv6 = isIPv6(a.ip);
+       const bIsIPv6 = isIPv6(b.ip);
++      if (preferIpv4 && aIsIPv6 !== bIsIPv6) {
++        return aIsIPv6 ? 1 : -1;
++      }
+       if (aIsIPv6 && !bIsIPv6) {
+         return -1;
+       } else if (!aIsIPv6 && bIsIPv6) {

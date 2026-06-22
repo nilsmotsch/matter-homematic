@@ -29,7 +29,20 @@ function buildDefaultConfig() {
       productId: 0x8001,
       storagePath: DATA_DIR
         ? path.join(DATA_DIR, '.matter-homematic')
-        : "./.matter-homematic"
+        : "./.matter-homematic",
+      // Prefer IPv4 for operational Matter traffic. matter.js otherwise always
+      // tries a controller's IPv6 address first (link-local, then global). On a
+      // CCU whose LAN/router gives it no usable global IPv6 route, reports and
+      // invoke confirmations sent to a controller's global IPv6 silently time
+      // out — so commands appear to "fail" in Alexa even though they executed.
+      // Defaults on for the addon (the CCU is the affected environment);
+      // standalone installs with healthy IPv6 leave it off. Consumed by the
+      // patched MdnsClient address sort via MATTER_HM_PREFER_IPV4.
+      preferIpv4: !!DATA_DIR,
+      // Optional: limit Matter mDNS to one interface (matterbridge's
+      // -mdnsinterface). Empty = all interfaces. Set e.g. "eth0" if NodeJS
+      // picks the wrong one on a multi-homed host.
+      mdnsInterface: ""
     },
     ccu: {
       // As an addon the bridge runs on the CCU itself; standalone, the user
@@ -253,6 +266,14 @@ async function main(): Promise<void> {
 
   log.info(`CCU Host: ${config.ccu.host}`);
   log.info(`Matter Port: ${config.bridge.port}`);
+
+  // Tell the patched matter.js mDNS resolver to rank IPv4 ahead of IPv6 when
+  // choosing a controller's operational address (see bridge.preferIpv4). Must
+  // be set before the bridge opens its Matter sockets.
+  if (config.bridge.preferIpv4) {
+    process.env.MATTER_HM_PREFER_IPV4 = '1';
+    log.info('Operational address preference: IPv4 first (preferIpv4)');
+  }
 
   // Hold the bridge instance in a mutable ref so the Web UI can replace it
   // during restart while the web server stays alive.

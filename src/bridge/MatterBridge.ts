@@ -23,8 +23,7 @@ import {
   ThermostatDevice,
   ContactSensorDevice,
   OccupancySensorDevice,
-  TemperatureSensorDevice,
-  DoorLockDevice
+  TemperatureSensorDevice
 } from "@matter/main/devices";
 
 import {
@@ -40,6 +39,34 @@ import { getLogger } from '../utils/Logger';
 import * as fs from 'fs';
 import * as path from 'path';
 
+/**
+ * WindowCovering servers that follow matterbridge's known-good pattern: the
+ * real CCU actuator is the single source of truth. matter.js's built-in
+ * movement simulation is disabled (`disableOperationalModeHandling`) and
+ * `handleMovement` is a no-op, so the server never fakes a position or fights
+ * the live LEVEL/LEVEL_2 events we feed back from the CCU. A goToLift/Tilt
+ * command still writes the target attribute, which our `$Changed` handlers
+ * forward to the CCU. Mirrors luligu/matterbridge `windowCoveringServer.ts`.
+ */
+class DeviceDrivenWindowCoveringServer extends WindowCoveringServer.with(
+  "Lift", "PositionAwareLift", "Tilt", "PositionAwareTilt",
+) {
+  override initialize() {
+    // `internal` is a protected matter.js member not surfaced on the narrowed
+    // subclass type; cast to reach disableOperationalModeHandling (matterbridge
+    // does the same via a `declare protected internal` shim).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (this as any).internal.disableOperationalModeHandling = true;
+    super.initialize();
+  }
+  override handleMovement(): void {
+    // The CCU actuator performs the movement; the resulting position arrives
+    // via deviceEvent → applyCcuUpdate. Nothing to simulate here.
+  }
+}
+const RollerWindowCoveringServer = DeviceDrivenWindowCoveringServer.with("Lift", "PositionAwareLift");
+const VenetianWindowCoveringServer = DeviceDrivenWindowCoveringServer.with("Lift", "PositionAwareLift", "Tilt", "PositionAwareTilt");
+
 interface BridgeConfig {
   name: string;
   port: number;
@@ -48,6 +75,13 @@ interface BridgeConfig {
   vendorId: number;
   productId: number;
   storagePath: string;
+  /** Rank IPv4 ahead of IPv6 for operational peer addresses (see index.ts /
+   *  the patched MdnsClient sort). Default on for the addon. */
+  preferIpv4?: boolean;
+  /** Limit Matter mDNS to a single network interface (e.g. "eth0"). Mirrors
+   *  matterbridge's -mdnsinterface (→ matter.js `mdns.networkInterface`).
+   *  Empty/unset = all interfaces (NodeJS chooses). */
+  mdnsInterface?: string;
 }
 
 interface FullConfig {
@@ -243,6 +277,15 @@ export class MatterHomematicBridge {
       environment.vars.set("storage.path", this.config.bridge.storagePath);
     }
 
+    // matterbridge-style network knob: pin Matter mDNS to one interface when
+    // NodeJS's automatic choice is wrong (multi-homed hosts). Default unset =
+    // all interfaces. The IPv4-vs-IPv6 *preference* is handled separately by
+    // bridge.preferIpv4 (matter.js exposes no config for peer-address family).
+    if (this.config.bridge.mdnsInterface) {
+      environment.vars.set("mdns.networkInterface", this.config.bridge.mdnsInterface);
+      getLogger().info(`Matter mDNS limited to interface: ${this.config.bridge.mdnsInterface}`);
+    }
+
     const storageService = environment.get(StorageService);
 
     this.serverNode = await ServerNode.create({
@@ -433,9 +476,6 @@ export class MatterHomematicBridge {
       case MatterDeviceType.TemperatureSensor:
         return this.createTemperatureSensorDevice(id, device, bridgedInfo);
 
-      case MatterDeviceType.DoorLock:
-        return this.createDoorLockDevice(id, device, bridgedInfo);
-
       default:
         getLogger().info(`Unsupported Matter device type: ${device.matterDeviceType}`);
         return null;
@@ -539,19 +579,36 @@ export class MatterHomematicBridge {
       const endpoint = new Endpoint(
         WindowCoveringDevice.with(
           BridgedDeviceBasicInformationServer,
-          WindowCoveringServer.with("Lift", "Tilt", "PositionAwareLift", "PositionAwareTilt", "AbsolutePosition"),
+          VenetianWindowCoveringServer,
         ),
         {
           id,
           bridgedDeviceBasicInformation: bridgedInfo,
+          // Attribute set mirrors matterbridge's createDefaultLiftTiltWindow-
+          // CoveringClusterServer: explicit configStatus/mode/operationalStatus
+          // and numberOfActuations so controllers (incl. Alexa) see a fully
+          // described, operational, stopped cover. Position is in Matter
+          // percent100ths (0 open … 10000 closed); the CCU drives current.
           windowCovering: {
             type: 8, // TiltBlindLift (venetian)
+            numberOfActuationsLift: 0,
+            numberOfActuationsTilt: 0,
+            configStatus: {
+              operational: true,
+              onlineReserved: false,
+              liftMovementReversed: false,
+              liftPositionAware: true,
+              tiltPositionAware: true,
+              liftEncoderControlled: false,
+              tiltEncoderControlled: false,
+            },
+            mode: { motorDirectionReversed: false, calibrationMode: false, maintenanceMode: false, ledFeedback: false },
+            operationalStatus: { global: 0, lift: 0, tilt: 0 },
+            endProductType: 12, // InteriorVenetianBlind (lift + tilt)
             currentPositionLiftPercent100ths: liftPos,
             targetPositionLiftPercent100ths: liftPos,
             currentPositionTiltPercent100ths: tiltPos,
             targetPositionTiltPercent100ths: tiltPos,
-            operationalStatus: { global: 0, lift: 0, tilt: 0 },
-            endProductType: 12, // InteriorVenetianBlind (lift + tilt); 5 was CellularShade (no tilt) — inconsistent with type 8
           },
         },
       );
@@ -611,17 +668,30 @@ export class MatterHomematicBridge {
     const endpoint = new Endpoint(
       WindowCoveringDevice.with(
         BridgedDeviceBasicInformationServer,
-        WindowCoveringServer.with("Lift", "PositionAwareLift", "AbsolutePosition"),
+        RollerWindowCoveringServer,
       ),
       {
         id,
         bridgedDeviceBasicInformation: bridgedInfo,
+        // Lift-only attribute set per matterbridge's createDefaultWindow-
+        // CoveringClusterServer (explicit configStatus/mode/operationalStatus).
         windowCovering: {
           type: 0, // Rollershade
+          numberOfActuationsLift: 0,
+          configStatus: {
+            operational: true,
+            onlineReserved: false,
+            liftMovementReversed: false,
+            liftPositionAware: true,
+            tiltPositionAware: false,
+            liftEncoderControlled: false,
+            tiltEncoderControlled: false,
+          },
+          mode: { motorDirectionReversed: false, calibrationMode: false, maintenanceMode: false, ledFeedback: false },
+          operationalStatus: { global: 0, lift: 0, tilt: 0 },
+          endProductType: 0, // RollerShade
           currentPositionLiftPercent100ths: liftPos,
           targetPositionLiftPercent100ths: liftPos,
-          operationalStatus: { global: 0, lift: 0, tilt: 0 },
-          endProductType: 0, // Rollershade
         },
       },
     );
@@ -736,38 +806,10 @@ export class MatterHomematicBridge {
     // Temperature sensors are read-only
   }
 
-  /**
-   * Create Door Lock device
-   */
-  private createDoorLockDevice(id: string, device: MappedDevice, bridgedInfo: any): Endpoint {
-    const endpoint = new Endpoint(
-      DoorLockDevice.with(BridgedDeviceBasicInformationServer),
-      {
-        id,
-        bridgedDeviceBasicInformation: bridgedInfo,
-        doorLock: {
-          lockState: device.currentState.lockState || 1, // 1 = locked
-          lockType: 0, // DeadBolt
-          actuatorEnabled: true
-        }
-      }
-    );
-
-    // Handle lock/unlock from Matter
-    endpoint.events.doorLock.lockState$Changed.on(async (value) => {
-      if (value !== null && value !== undefined) {
-        getLogger().info(`Matter -> CCU: ${device.hmAddress} LOCK = ${value}`);
-        const hmValue = this.deviceMapper.convertToHomematic(
-          device.hmAddress, 'doorLock', 'lockState', value
-        );
-        if (hmValue) {
-          await this.ccuConnector.setValue(device.hmAddress, hmValue.key, hmValue.value);
-        }
-      }
-    });
-
-    return endpoint;
-  }
+  // Door locks (KEYMATIC / HmIP-DLD) are intentionally unsupported for now —
+  // the previous lockState-attribute approach didn't match Matter's
+  // command-driven DoorLock model. Removed rather than ship a non-functional
+  // endpoint; see README "Unsupported devices".
 
   /**
    * For a `*_VIRTUAL_RECEIVER` channel, find the `*_TRANSMITTER` channel of

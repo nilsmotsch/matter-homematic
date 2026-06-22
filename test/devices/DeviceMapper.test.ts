@@ -62,12 +62,6 @@ describe('DeviceMapper', () => {
       expect(result!.matterDeviceType).toBe(MatterDeviceType.TemperatureSensor);
     });
 
-    it('maps KEYMATIC to DoorLock', () => {
-      const result = mapper.mapChannel('BidCos-RF.LEQ1234567:1', 'KEYMATIC', 'HM-Sec-Key', 'Lock', { STATE: false });
-      expect(result).not.toBeNull();
-      expect(result!.matterDeviceType).toBe(MatterDeviceType.DoorLock);
-    });
-
     it('returns null for unknown channel type', () => {
       const result = mapper.mapChannel('ADDR:1', 'UNKNOWN_TYPE', 'UNKNOWN', 'Unknown', {});
       expect(result).toBeNull();
@@ -257,32 +251,6 @@ describe('DeviceMapper', () => {
       });
     });
 
-    describe('door lock (HM true=unlocked <-> Matter 1=locked/2=unlocked)', () => {
-      beforeEach(() => {
-        mapper.mapChannel('ADDR:1', 'KEYMATIC', 'HM-Sec-Key', 'Lock', { STATE: false });
-      });
-
-      it('converts HM unlocked to Matter unlocked (2)', () => {
-        const result = mapper.convertToMatter('ADDR:1', 'STATE', true);
-        expect(result!.value).toBe(2);
-      });
-
-      it('converts HM locked to Matter locked (1)', () => {
-        const result = mapper.convertToMatter('ADDR:1', 'STATE', false);
-        expect(result!.value).toBe(1);
-      });
-
-      it('converts Matter unlocked to HM unlocked', () => {
-        const result = mapper.convertToHomematic('ADDR:1', 'doorLock', 'lockState', 2);
-        expect(result!.value).toBe(true);
-      });
-
-      it('converts Matter locked to HM locked', () => {
-        const result = mapper.convertToHomematic('ADDR:1', 'doorLock', 'lockState', 1);
-        expect(result!.value).toBe(false);
-      });
-    });
-
     describe('occupancy (bitmap object, NOT a plain number — matter.js rejects numbers)', () => {
       beforeEach(() => {
         mapper.mapChannel('SPI:1', 'PRESENCEDETECTOR_TRANSCEIVER', 'HmIP-SPI', 'Presence', { PRESENCE_DETECTION_STATE: false });
@@ -360,10 +328,9 @@ describe('DeviceMapper', () => {
       expect(result!.matterDeviceType).toBe(MatterDeviceType.OccupancySensor);
     });
 
-    it('infers HmIP door lock types', () => {
+    it('does not map door locks (HmIP-DLD unsupported for now)', () => {
       const result = mapper.mapChannel('ADDR:1', 'UNKNOWN', 'HmIP-DLD', 'Lock', {});
-      expect(result).not.toBeNull();
-      expect(result!.matterDeviceType).toBe(MatterDeviceType.DoorLock);
+      expect(result).toBeNull();
     });
 
     it('infers classic HM switch types', () => {

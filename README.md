@@ -42,9 +42,12 @@ Mapping works on the Homematic *channel type*, not the device model, so most act
 | Motion / presence detector | Occupancy sensor | HmIP-SMI/SMO, HmIP-SPI, HM-Sec-MDIR |
 | Temperature/weather sensor | Temperature sensor | HM-WDS\*, HmIP weather channels |
 | Heating thermostat | Thermostat (heating) | HmIP-eTRV, HmIP-STH/STHD, HM-CC-RT-DN |
-| Door lock | Door lock | HM-Sec-Key (Keymatic), HmIP-DLD |
 
 Multi-channel devices (e.g. the 8-channel HmIPW-DRS8) produce one Matter device per channel; HmIP receiver groups are collapsed so each actuator channel appears once, not three times.
+
+### Unsupported devices
+
+- **Door locks (HM-Sec-Key / Keymatic, HmIP-DLD)** — not supported at the moment. Matter door locks are command-driven (`lockDoor`/`unlockDoor`), which the current mapper doesn't implement, so lock support was removed rather than ship something non-functional. Not a priority; contributions welcome.
 
 ### What has actually been tested
 
@@ -59,7 +62,7 @@ Verified end-to-end on real hardware — eQ-3 CCU3 (firmware 3.87.x), bridge run
 | HmIP-SWDO (window contact) | ⚠️ Partially | Discovered and mapped on the real CCU; open/close events not yet systematically verified |
 | HmIP-PSM, HmIP-BSM, HmIP-BDT | ⚠️ Simulated only | Verified against the pydevccu test double, not real hardware |
 | Thermostats (HmIP-eTRV/STH, HM-CC-RT-DN) | ❌ Untested | Mapping exists and passes unit tests; no thermostat hardware available — feedback welcome |
-| Door locks, motion (non-SPI), weather sensors | ❌ Untested | Implemented from paramset documentation — feedback welcome |
+| Motion (non-SPI), weather sensors | ❌ Untested | Implemented from paramset documentation — feedback welcome |
 | Classic BidCos devices (HM-LC-\*, HM-Sec-\*) | ❌ Untested | Test installation is all-HmIP/HmIPW; the BidCos-RF interface code path is exercised, the device mappings are not |
 
 Ecosystems: **Apple Home** and **Amazon Alexa** are tested end-to-end (commissioning, control, live state — Alexa joined as a second controller via multi-admin). Google Home and SmartThings speak the same Matter standard and are expected to work, but haven't been verified yet.

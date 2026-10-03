@@ -127,7 +127,8 @@ When running remotely, CCU names and rooms require CCU WebUI credentials via the
   "devices": {
     "defaultExposed": false,      // opt-in per channel by default
     "exposed": {},                // managed via the Web UI
-    "tilt": {}                    // per-channel tilt override (Web UI)
+    "tilt": {},                   // per-channel tilt override (Web UI)
+    "matterType": {}              // per-channel Plug/Light override (Web UI)
   },
   "web": { "enabled": true, "port": 8080 },
   "logging": { "level": "info" }
@@ -139,6 +140,19 @@ Everything under `devices` is normally managed from the Web UI, not by hand. CLI
 ### Blind tilt: auto-detect and override
 
 Venetian blinds get both lift and slat-tilt controls in Matter; rollers get lift only. The bridge auto-detects this from the channel's live paramset. One case can't be auto-detected: the HmIP-FBL always reports tilt capability even when a plain roller is physically wired to it. For those channels, set the **Tilt** dropdown in the Web UI device list to *Off* (or *Tilt* to force tilt on). Changing it requires a bridge restart to apply.
+
+### Plug vs. Light
+
+Apple Home, Alexa and Google decide an accessory's *category* — its icon, whether it lands in the Lights group, whether "turn off the lights" reaches it — from the Matter device type, not from what the device can do. The CCU can't tell the two apart: a switch actuator driving a ceiling lamp and one driving a pump are the same channel type. So switches default to **Plug** and dimmers to **Light**, and you can override either per channel with the dropdown in the Web UI's **Matter Type** column:
+
+| | Plug | Light |
+|---|---|---|
+| Switch channel | `OnOffPlugInUnit` (default) | `OnOffLight` |
+| Dimmer channel | `DimmablePlugInUnit` | `DimmableLight` (default) |
+
+Both options control the device identically — only the category changes. Leave the dropdown on *Auto* to follow the default.
+
+Changing it requires a bridge restart. Note that ecosystems cache the category from when the accessory was first added, so after the restart your app may still show the old icon; removing that one accessory and letting the bridge re-add it is the reliable fix (Alexa often just needs a "Discover devices"). The channel keeps its endpoint number, so its name, room and automations survive either way.
 
 ## How it works
 

@@ -18,7 +18,9 @@ import {
 
 import {
   OnOffPlugInUnitDevice,
+  OnOffLightDevice,
   DimmableLightDevice,
+  DimmablePlugInUnitDevice,
   WindowCoveringDevice,
   ThermostatDevice,
   ContactSensorDevice,
@@ -34,7 +36,7 @@ import {
 } from "@matter/main/behaviors";
 import { VendorId, QrCode } from "@matter/main/types";
 import { CcuConnector, HmChannel, HmSystemVariable } from '../ccu/CcuConnector';
-import { DeviceMapper, MappedDevice, MatterDeviceType } from '../devices/DeviceMapper';
+import { DeviceMapper, MappedDevice, MatterDeviceType, MatterTypeRole } from '../devices/DeviceMapper';
 import { getLogger } from '../utils/Logger';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -106,6 +108,13 @@ interface FullConfig {
      *  detect from LEVEL_2 value (works on HmIPW-DRBL4 but not HmIP-FBL,
      *  which always reports LEVEL_2 numeric regardless of physical install). */
     tilt?: Record<string, boolean>;
+    /** Per-address Plug-vs-Light override for switch/dimmer channels.
+     *  'plug' | 'light'; absent = the mapper's default (switch → plug, dimmer
+     *  → light). Only changes the advertised Matter device type, which is what
+     *  drives the ecosystem's accessory category — clusters are identical
+     *  either way. Absent for every channel unless set via the Web UI, so
+     *  existing installs are unaffected. */
+    matterType?: Record<string, MatterTypeRole>;
   };
   /** CCU system variables exposed as Matter switches. Opt-in per ReGa id,
    *  mirroring the per-device exposure model. */
@@ -239,8 +248,11 @@ export class MatterHomematicBridge {
         deviceType,
         channel.name,
         values,
-        channel.room,
-        this.config.devices?.tilt?.[address]
+        {
+          room: channel.room,
+          tiltOverride: this.config.devices?.tilt?.[address],
+          typeOverride: this.config.devices?.matterType?.[address]
+        }
       );
 
       if (mapped) {
@@ -500,10 +512,14 @@ export class MatterHomematicBridge {
     };
 
     switch (device.matterDeviceType) {
+      // Each pair is the same endpoint modulo the advertised device type —
+      // see the Plug-vs-Light override in DeviceMapper.
       case MatterDeviceType.OnOffPlugInUnit:
+      case MatterDeviceType.OnOffLight:
         return this.createOnOffDevice(id, device, bridgedInfo);
 
       case MatterDeviceType.DimmableLight:
+      case MatterDeviceType.DimmablePlugInUnit:
         return this.createDimmableDevice(id, device, bridgedInfo);
 
       case MatterDeviceType.WindowCovering:
@@ -553,19 +569,25 @@ export class MatterHomematicBridge {
   }
 
   /**
-   * Create OnOff device (switch/plug)
+   * Create OnOff device (switch/plug).
+   *
+   * Plug-in unit by default; OnOffLight when the user flagged the channel as a
+   * light (config.devices.matterType). The two device types are cluster- and
+   * feature-identical — OnOffPlugInUnitDevice already composes OnOff with the
+   * Lighting feature — so only the advertised device type differs, which is
+   * what drives the ecosystem's accessory category.
    */
   private createOnOffDevice(id: string, device: MappedDevice, bridgedInfo: any): Endpoint {
-    const endpoint = new Endpoint(
-      OnOffPlugInUnitDevice.with(BridgedDeviceBasicInformationServer),
-      {
-        id,
-        bridgedDeviceBasicInformation: bridgedInfo,
-        onOff: {
-          onOff: device.currentState.onOff || false
-        }
+    const init = {
+      id,
+      bridgedDeviceBasicInformation: bridgedInfo,
+      onOff: {
+        onOff: device.currentState.onOff || false
       }
-    );
+    };
+    const endpoint = device.matterDeviceType === MatterDeviceType.OnOffLight
+      ? new Endpoint(OnOffLightDevice.with(BridgedDeviceBasicInformationServer), init)
+      : new Endpoint(OnOffPlugInUnitDevice.with(BridgedDeviceBasicInformationServer), init);
 
     // Handle state changes from Matter
     endpoint.events.onOff.onOff$Changed.on((value) => {
@@ -584,27 +606,31 @@ export class MatterHomematicBridge {
   }
 
   /**
-   * Create Dimmable device (dimmer/light)
+   * Create Dimmable device (dimmer/light).
+   *
+   * Dimmable light by default; DimmablePlugInUnit when the user flagged the
+   * channel as a plug (config.devices.matterType). Same cluster set and same
+   * LevelControl features on both — only the advertised device type differs.
    */
   private createDimmableDevice(id: string, device: MappedDevice, bridgedInfo: any): Endpoint {
     // Matter LevelControl requires currentLevel in [minLevel, maxLevel].
     // Raw HM LEVEL=0 maps to Matter 0 which is below minLevel=1, so clamp.
     const initialLevel = device.currentState.currentLevel || 0;
-    const endpoint = new Endpoint(
-      DimmableLightDevice.with(BridgedDeviceBasicInformationServer),
-      {
-        id,
-        bridgedDeviceBasicInformation: bridgedInfo,
-        onOff: {
-          onOff: initialLevel > 0
-        },
-        levelControl: {
-          currentLevel: Math.max(1, Math.min(254, initialLevel || 1)),
-          minLevel: 1,
-          maxLevel: 254
-        }
+    const init = {
+      id,
+      bridgedDeviceBasicInformation: bridgedInfo,
+      onOff: {
+        onOff: initialLevel > 0
+      },
+      levelControl: {
+        currentLevel: Math.max(1, Math.min(254, initialLevel || 1)),
+        minLevel: 1,
+        maxLevel: 254
       }
-    );
+    };
+    const endpoint = device.matterDeviceType === MatterDeviceType.DimmablePlugInUnit
+      ? new Endpoint(DimmablePlugInUnitDevice.with(BridgedDeviceBasicInformationServer), init)
+      : new Endpoint(DimmableLightDevice.with(BridgedDeviceBasicInformationServer), init);
 
     // Handle on/off from Matter
     endpoint.events.onOff.onOff$Changed.on((value) => {
@@ -929,8 +955,11 @@ export class MatterHomematicBridge {
           parentDevice?.type || 'Unknown',
           channel.name,
           channel.paramsets.VALUES || {},
-          channel.room,
-          this.config.devices?.tilt?.[address]
+          {
+            room: channel.room,
+            tiltOverride: this.config.devices?.tilt?.[address],
+            typeOverride: this.config.devices?.matterType?.[address]
+          }
         );
         if (mapped) getLogger().info(`Mapped announced channel ${address} (${mapped.matterDeviceType}) — expose it in the Web UI`);
       }

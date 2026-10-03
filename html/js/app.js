@@ -194,7 +194,7 @@ async function loadDevices() {
   } catch (err) {
     console.error('Failed to load devices:', err);
     document.getElementById('device-tbody').innerHTML =
-      '<tr><td colspan="7" class="text-center text-body-secondary py-4">Failed to load devices</td></tr>';
+      '<tr><td colspan="8" class="text-center text-body-secondary py-4">Failed to load devices</td></tr>';
   }
 }
 
@@ -219,13 +219,61 @@ function renderDeviceTable(devices) {
       <td class="fw-medium">${esc(d.name || d.address)}</td>
       <td class="mono">${addr}</td>
       <td><span class="badge badge-hm">${esc(d.hmChannelType || d.hmDeviceType || '--')}</span></td>
-      <td><span class="badge badge-matter">${esc(d.matterDeviceType || '--')}</span></td>
+      <td>${renderMatterTypeControl(d)}</td>
       <td>${renderTiltControl(d)}</td>
       <td>${esc(d.room || '')}</td>
       <td>${renderState(d)}</td>
     </tr>
   `;
   }).join('');
+}
+
+/**
+ * Tri-state Plug-vs-Light override for switch/dimmer channels. Apple Home and
+ * Alexa derive the accessory category (icon, "Lights" grouping, "turn off the
+ * lights") from the Matter device type, and only the user knows whether a
+ * channel drives a lamp or an appliance — the CCU reports both the same way.
+ *
+ * Channels with no such choice (blinds, sensors, thermostats) keep the plain
+ * badge; the server signals eligibility by sending a non-null defaultMatterRole.
+ * Rendering this control never writes config — only the user's onchange does.
+ */
+function renderMatterTypeControl(d) {
+  const type = esc(d.matterDeviceType || '--');
+  const badge = `<span class="badge badge-matter">${type}</span>`;
+  if (!d.defaultMatterRole) return badge;
+  const addr = esc(d.address);
+  const cur = d.matterTypeOverride; // null | 'plug' | 'light'
+  const sel = (v) => cur === v ? 'selected' : '';
+  const autoLabel = d.defaultMatterRole === 'plug' ? 'Auto (Plug)' : 'Auto (Light)';
+  const hint = 'Changing this needs a bridge restart. Your smart home app may keep '
+    + 'the old category until you remove and re-add the accessory.';
+  return `
+    <select class="form-select form-select-sm matter-type-select"
+            data-address="${addr}" title="${type} — ${esc(hint)}"
+            onchange="setMatterTypeOverride('${addr}', this.value)">
+      <option value="auto" ${sel(null)}>${autoLabel}</option>
+      <option value="plug" ${sel('plug')}>Plug</option>
+      <option value="light" ${sel('light')}>Light</option>
+    </select>
+  `;
+}
+
+async function setMatterTypeOverride(address, value) {
+  const matterType = value === 'auto' ? null : value;
+  try {
+    await fetchApi('setDeviceMatterType', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address, matterType }),
+    });
+    const dev = allDevices.find(d => d.address === address);
+    if (dev) dev.matterTypeOverride = matterType;
+    document.getElementById('expose-alert').style.display = '';
+  } catch (err) {
+    console.error('Failed to set Matter type override:', err);
+    alert('Failed to save. Check bridge logs.');
+  }
 }
 
 /**

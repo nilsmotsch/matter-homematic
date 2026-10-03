@@ -42,6 +42,7 @@
     "defaultExposed": false,
     "exposed": {},
     "tilt": {},
+    "matterType": {},
     "customMappings": []
   },
   "systemVariables": {

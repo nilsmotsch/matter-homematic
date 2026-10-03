@@ -377,6 +377,14 @@ body {
   border-radius: 4px;
 }
 
+/* Plug/Light selector sits in the Matter Type column, which previously held a
+   short badge — cap it so a full-width select doesn't widen the column. */
+.matter-type-select {
+  max-width: 10rem;
+  font-family: var(--mhb-mono);
+  font-size: 0.75rem;
+}
+
 .state-item {
   font-size: 0.8rem;
   color: var(--mhb-text-muted);

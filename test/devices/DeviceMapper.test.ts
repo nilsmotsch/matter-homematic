@@ -1,4 +1,4 @@
-import { DeviceMapper, MatterDeviceType } from '../../src/devices/DeviceMapper';
+import { DeviceMapper, MatterDeviceType, matterTypeRoleOf } from '../../src/devices/DeviceMapper';
 
 describe('DeviceMapper', () => {
   let mapper: DeviceMapper;
@@ -83,6 +83,117 @@ describe('DeviceMapper', () => {
       const result = mapper.mapChannel('HmIP.001:3', 'UNKNOWN', 'HmIP-PSM', 'IP Switch', { STATE: true });
       expect(result).not.toBeNull();
       expect(result!.matterDeviceType).toBe(MatterDeviceType.OnOffPlugInUnit);
+    });
+
+    // Regression guard for the Plug/Light override: adding it must be a strict
+    // no-op for every existing install. A silent device-type change on upgrade
+    // would re-categorize accessories in Apple Home / Alexa for users who never
+    // asked for it, so these pin the defaults with no options argument at all.
+    describe('defaults are unchanged without an override', () => {
+      it('keeps switch channels on OnOffPlugInUnit', () => {
+        expect(mapper.mapChannel('S:1', 'SWITCH', 'HM-LC-Sw1-FM', 'Switch', { STATE: false })!
+          .matterDeviceType).toBe(MatterDeviceType.OnOffPlugInUnit);
+        expect(mapper.mapChannel('S:2', 'SWITCH_VIRTUAL_RECEIVER', 'HmIP-BSM', 'IP Switch', { STATE: true })!
+          .matterDeviceType).toBe(MatterDeviceType.OnOffPlugInUnit);
+      });
+
+      it('keeps dimmer channels on DimmableLight', () => {
+        expect(mapper.mapChannel('D:1', 'DIMMER', 'HM-LC-Dim1-FM', 'Dimmer', { LEVEL: 0.5 })!
+          .matterDeviceType).toBe(MatterDeviceType.DimmableLight);
+        expect(mapper.mapChannel('D:2', 'DIMMER_VIRTUAL_RECEIVER', 'HmIP-BDT', 'IP Dimmer', { LEVEL: 0.5 })!
+          .matterDeviceType).toBe(MatterDeviceType.DimmableLight);
+      });
+
+      it('keeps the device-type inference fallback on its original types', () => {
+        expect(mapper.mapChannel('INF:3', 'UNKNOWN', 'HmIP-PSM', 'Inferred plug', { STATE: true })!
+          .matterDeviceType).toBe(MatterDeviceType.OnOffPlugInUnit);
+        expect(mapper.mapChannel('INF:4', 'UNKNOWN', 'HmIP-BDT', 'Inferred dimmer', { LEVEL: 0.5 })!
+          .matterDeviceType).toBe(MatterDeviceType.DimmableLight);
+      });
+
+      it('treats an explicitly undefined override as absent', () => {
+        const result = mapper.mapChannel('S:3', 'SWITCH', 'HM-LC-Sw1-FM', 'Switch', { STATE: false },
+          { typeOverride: undefined });
+        expect(result!.matterDeviceType).toBe(MatterDeviceType.OnOffPlugInUnit);
+      });
+
+      it('is a no-op when the override equals the default', () => {
+        expect(mapper.mapChannel('S:4', 'SWITCH', 'HM-LC-Sw1-FM', 'Switch', { STATE: false },
+          { typeOverride: 'plug' })!.matterDeviceType).toBe(MatterDeviceType.OnOffPlugInUnit);
+        expect(mapper.mapChannel('D:4', 'DIMMER', 'HM-LC-Dim1-FM', 'Dimmer', { LEVEL: 0.5 },
+          { typeOverride: 'light' })!.matterDeviceType).toBe(MatterDeviceType.DimmableLight);
+      });
+
+      it('ignores a stray override on channel types with no Plug/Light choice', () => {
+        // A hand-edited config must never be able to turn a blind into a light.
+        const result = mapper.mapChannel('BL:1', 'BLIND', 'HM-LC-Bl1', 'Blind', { LEVEL: 0.0 },
+          { typeOverride: 'light' });
+        expect(result!.matterDeviceType).toBe(MatterDeviceType.WindowCovering);
+        expect(result!.defaultMatterRole).toBeUndefined();
+      });
+    });
+
+    describe('matterType override (Plug vs. Light, user-configured via web UI)', () => {
+      it('exposes a switch as OnOffLight when overridden to light', () => {
+        const result = mapper.mapChannel('S:1', 'SWITCH', 'HM-LC-Sw1-FM', 'Ceiling lamp',
+          { STATE: true }, { typeOverride: 'light' });
+        expect(result!.matterDeviceType).toBe(MatterDeviceType.OnOffLight);
+        // defaultMatterRole stays the *auto* value so the UI can still label
+        // the untouched option "Auto (Plug)".
+        expect(result!.defaultMatterRole).toBe('plug');
+      });
+
+      it('applies the override to SWITCH_VIRTUAL_RECEIVER too', () => {
+        const result = mapper.mapChannel('HmIP.1:4', 'SWITCH_VIRTUAL_RECEIVER', 'HmIP-BSM', 'Ceiling',
+          { STATE: false }, { typeOverride: 'light' });
+        expect(result!.matterDeviceType).toBe(MatterDeviceType.OnOffLight);
+      });
+
+      it('exposes a dimmer as DimmablePlugInUnit when overridden to plug', () => {
+        const result = mapper.mapChannel('HmIP.2:4', 'DIMMER_VIRTUAL_RECEIVER', 'HmIP-BDT', 'Fan',
+          { LEVEL: 0.5 }, { typeOverride: 'plug' });
+        expect(result!.matterDeviceType).toBe(MatterDeviceType.DimmablePlugInUnit);
+        expect(result!.defaultMatterRole).toBe('light');
+      });
+
+      it('remains overridable through the device-type inference fallback', () => {
+        // channelType 'UNKNOWN' + HmIP-PSM infers SWITCH — eligibility is keyed
+        // on the resolved Matter type, not the raw channel type.
+        const result = mapper.mapChannel('INF:3', 'UNKNOWN', 'HmIP-PSM', 'Inferred',
+          { STATE: true }, { typeOverride: 'light' });
+        expect(result!.matterDeviceType).toBe(MatterDeviceType.OnOffLight);
+      });
+
+      it('keeps clusters, valueMappings and state identical across the override', () => {
+        // Regression guard: the plug/light pairs are cluster-identical, so a
+        // future mapper change must never let them diverge.
+        const def = mapper.mapChannel('A:1', 'DIMMER', 'HM-LC-Dim1', 'a', { LEVEL: 0.5 });
+        const ovr = mapper.mapChannel('B:1', 'DIMMER', 'HM-LC-Dim1', 'b', { LEVEL: 0.5 },
+          { typeOverride: 'plug' });
+        expect(ovr!.matterDeviceType).not.toBe(def!.matterDeviceType);
+        expect(ovr!.clusters).toEqual(def!.clusters);
+        expect(Object.keys(ovr!.valueMappings)).toEqual(Object.keys(def!.valueMappings));
+        expect(ovr!.currentState).toEqual(def!.currentState);
+      });
+
+      it('still converts values after an override', () => {
+        mapper.mapChannel('OVR:1', 'DIMMER', 'HM-LC-Dim1', 'Dimmer', { LEVEL: 0.5 },
+          { typeOverride: 'plug' });
+        expect(mapper.convertToHomematic('OVR:1', 'levelControl', 'currentLevel', 254))
+          .toEqual({ key: 'LEVEL', value: 1 });
+      });
+    });
+  });
+
+  describe('matterTypeRoleOf', () => {
+    it('classifies the switchable device types and rejects the rest', () => {
+      expect(matterTypeRoleOf(MatterDeviceType.OnOffPlugInUnit)).toBe('plug');
+      expect(matterTypeRoleOf(MatterDeviceType.OnOffLight)).toBe('light');
+      expect(matterTypeRoleOf(MatterDeviceType.DimmablePlugInUnit)).toBe('plug');
+      expect(matterTypeRoleOf(MatterDeviceType.DimmableLight)).toBe('light');
+      expect(matterTypeRoleOf(MatterDeviceType.WindowCovering)).toBeNull();
+      expect(matterTypeRoleOf(MatterDeviceType.Thermostat)).toBeNull();
+      expect(matterTypeRoleOf(MatterDeviceType.ContactSensor)).toBeNull();
     });
   });
 
@@ -197,7 +308,7 @@ describe('DeviceMapper', () => {
           // wired a roller — they set the override in the UI to hide tilt.
           const result = mapper.mapChannel(
             'FBL-ROLLER:4', 'BLIND_VIRTUAL_RECEIVER', 'HmIP-FBL', 'Physical roller',
-            { LEVEL: 0.5, LEVEL_2: 1.0 }, undefined, false,
+            { LEVEL: 0.5, LEVEL_2: 1.0 }, { tiltOverride: false },
           );
           expect(result!.hasTilt).toBeUndefined();
           expect(mapper.convertToMatter('FBL-ROLLER:4', 'LEVEL_2', 0.5)).toBeNull();
@@ -208,7 +319,7 @@ describe('DeviceMapper', () => {
           // as roller. Still drive tilt mappings.
           const result = mapper.mapChannel(
             'FORCE-TILT:1', 'BLIND_VIRTUAL_RECEIVER', 'HmIPW-DRBL4', 'Force tilt',
-            { LEVEL: 0.0, LEVEL_2: '' }, undefined, true,
+            { LEVEL: 0.0, LEVEL_2: '' }, { tiltOverride: true },
           );
           expect(result!.hasTilt).toBe(true);
           expect(result!.valueMappings.LEVEL_2).toBeDefined();
@@ -217,9 +328,18 @@ describe('DeviceMapper', () => {
         it('falls back to auto-detection when tiltOverride is undefined', () => {
           const result = mapper.mapChannel(
             'AUTO:4', 'BLIND_VIRTUAL_RECEIVER', 'HmIP-FBL', 'Auto',
-            { LEVEL: 0.5, LEVEL_2: 0.25 }, undefined, undefined,
+            { LEVEL: 0.5, LEVEL_2: 0.25 }, {},
           );
           expect(result!.hasTilt).toBe(true);
+        });
+
+        it('composes with the Matter type override without interference', () => {
+          const result = mapper.mapChannel(
+            'MIX:4', 'BLIND_VIRTUAL_RECEIVER', 'HmIP-FBL', 'Mixed overrides',
+            { LEVEL: 0.5, LEVEL_2: 1.0 }, { tiltOverride: false, typeOverride: 'light' },
+          );
+          expect(result!.hasTilt).toBeUndefined();
+          expect(result!.matterDeviceType).toBe(MatterDeviceType.WindowCovering);
         });
       });
 
@@ -227,7 +347,7 @@ describe('DeviceMapper', () => {
         // tiltOverride=true keeps the LEVEL_2 mapping despite the '' value
         const result = mapper.mapChannel(
           'MOVING:14', 'BLIND_VIRTUAL_RECEIVER', 'HmIPW-DRBL4', 'Moving blind',
-          { LEVEL: '', LEVEL_2: '' }, undefined, true,
+          { LEVEL: '', LEVEL_2: '' }, { tiltOverride: true },
         );
         // '' must not be coerced to a position (1-'' would yield 10000 = closed)
         expect(result!.currentState.currentPositionLiftPercent100ths).toBeUndefined();

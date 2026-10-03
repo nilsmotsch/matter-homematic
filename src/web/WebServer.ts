@@ -190,6 +190,14 @@ export class WebServer {
         this.handleSetDeviceTilt(req, res);
         break;
 
+      case 'setDeviceMatterType':
+        if (req.method !== 'POST') {
+          this.sendJson(res, 405, { error: 'POST required' });
+          return;
+        }
+        this.handleSetDeviceMatterType(req, res);
+        break;
+
       case 'restartBridge':
         if (req.method !== 'POST') {
           this.sendJson(res, 405, { error: 'POST required' });
@@ -270,12 +278,15 @@ export class WebServer {
   }
 
   private getDevices() {
-    const { exposed, defaultExposed, tilt } = this.readExposureConfig();
+    const { exposed, defaultExposed, tilt, matterType } = this.readExposureConfig();
     const devices: any[] = [];
     for (const [address, device] of this.deps.getDevices()) {
       const explicit = Object.prototype.hasOwnProperty.call(exposed, address);
       const tiltOverride = Object.prototype.hasOwnProperty.call(tilt, address)
         ? tilt[address]
+        : null;
+      const matterTypeOverride = Object.prototype.hasOwnProperty.call(matterType, address)
+        ? matterType[address]
         : null;
       devices.push({
         address,
@@ -290,21 +301,32 @@ export class WebServer {
         exposedExplicit: explicit,
         hasTilt: !!device.hasTilt,
         tiltOverride,
+        // null = this channel type has no Plug/Light choice (blinds, sensors,
+        // thermostats). Non-null is both the "overridable" signal for the UI
+        // and the auto label it shows ("Auto (Plug)").
+        defaultMatterRole: device.defaultMatterRole ?? null,
+        matterTypeOverride,
       });
     }
     return { devices, count: devices.length, defaultExposed , loading: !this.deps.isDiscoveryComplete() };
   }
 
-  private readExposureConfig(): { exposed: Record<string, boolean>; defaultExposed: boolean; tilt: Record<string, boolean> } {
+  private readExposureConfig(): {
+    exposed: Record<string, boolean>;
+    defaultExposed: boolean;
+    tilt: Record<string, boolean>;
+    matterType: Record<string, 'plug' | 'light'>;
+  } {
     try {
       const config = JSON.parse(fs.readFileSync(this.deps.configPath, 'utf-8'));
       return {
         exposed: config.devices?.exposed || {},
         defaultExposed: config.devices?.defaultExposed ?? false,
         tilt: config.devices?.tilt || {},
+        matterType: config.devices?.matterType || {},
       };
     } catch {
-      return { exposed: {}, defaultExposed: false, tilt: {} };
+      return { exposed: {}, defaultExposed: false, tilt: {}, matterType: {} };
     }
   }
 
@@ -544,6 +566,49 @@ export class WebServer {
       });
       getLogger().info(`Device ${address} tilt override set to ${tilt}. Restart required.`);
       this.sendJson(res, 200, { success: true, message: 'Saved. Restart bridge to apply.' });
+    });
+  }
+
+  /**
+   * Per-address Plug-vs-Light override for switch/dimmer channels:
+   *   'plug'  → OnOffPlugInUnit / DimmablePlugInUnit
+   *   'light' → OnOffLight      / DimmableLight
+   *   null    → clear override, use the mapper's default
+   *
+   * Ecosystems derive the accessory category from the Matter device type and
+   * the CCU can't tell a lamp from a pump on the same channel type, so the
+   * user picks. Restart-required like the tilt override — the device type is
+   * fixed at endpoint construction. Anything other than the three accepted
+   * values is rejected rather than coerced, so a corrupted value can never
+   * silently remap a device.
+   */
+  private handleSetDeviceMatterType(req: http.IncomingMessage, res: http.ServerResponse): void {
+    this.readJsonBody(req, res, (payload) => {
+      const { address, matterType } = payload || {};
+      if (
+        typeof address !== 'string' ||
+        (matterType !== null && matterType !== 'plug' && matterType !== 'light')
+      ) {
+        this.sendJson(res, 400, {
+          error: "Expected {address: string, matterType: 'plug' | 'light' | null}"
+        });
+        return;
+      }
+      this.writeConfigPatch((config) => {
+        if (!config.devices.matterType) config.devices.matterType = {};
+        if (matterType === null) {
+          // Clear rather than pin today's default, so the channel keeps
+          // following the mapper if the defaults ever change.
+          delete config.devices.matterType[address];
+        } else {
+          config.devices.matterType[address] = matterType;
+        }
+      });
+      getLogger().info(`Device ${address} Matter type override set to ${matterType}. Restart required.`);
+      this.sendJson(res, 200, {
+        success: true,
+        message: 'Saved. Restart bridge to apply. Your smart home app may keep the old category until you remove and re-add the accessory.'
+      });
     });
   }
 

@@ -64,7 +64,12 @@ function buildDefaultConfig() {
     },
     devices: {
       defaultExposed: false,
-      exposed: {} as Record<string, boolean>
+      exposed: {} as Record<string, boolean>,
+      // Per-channel overrides written by the Web UI. Empty by default —
+      // absent entries mean "use the DeviceMapper default", so seeding these
+      // keys changes nothing for an existing install.
+      tilt: {} as Record<string, boolean>,
+      matterType: {} as Record<string, 'plug' | 'light'>
     },
     systemVariables: {
       // Opt-in per ReGa id (the Web UI's System Variables tab toggles these).

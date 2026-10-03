@@ -24,6 +24,62 @@ export enum MatterDeviceType {
   Unknown = 'Unknown'
 }
 
+/**
+ * User-selectable presentation role for channels that Matter models both as an
+ * appliance outlet and as a luminaire.
+ *
+ * Ecosystems derive the accessory *category* (icon, "Lights" grouping, whether
+ * "turn off the lights" reaches it) from the Matter device type, not from the
+ * clusters. The CCU has no flag that tells the two apart — an HmIP-BSM driving
+ * a ceiling lamp and one driving a pump are the same SWITCH_VIRTUAL_RECEIVER —
+ * so only the user can decide. Config: `devices.matterType[address]`.
+ */
+export type MatterTypeRole = 'plug' | 'light';
+
+/**
+ * Matter device-type pairs that differ *only* by that role. Both members of
+ * each pair expose Identify/Groups/ScenesManagement/OnOff (plus LevelControl
+ * for the dimmable pair) with identical features — verified against matter.js
+ * 0.16.x, where OnOffPlugInUnitDevice already composes OnOff with the Lighting
+ * feature exactly like OnOffLightDevice. So swapping needs no other change:
+ * same clusters, same init state, same $Changed events, same value mappings.
+ */
+const MATTER_TYPE_ROLE_PAIRS: Array<Record<MatterTypeRole, MatterDeviceType>> = [
+  { plug: MatterDeviceType.OnOffPlugInUnit, light: MatterDeviceType.OnOffLight },
+  { plug: MatterDeviceType.DimmablePlugInUnit, light: MatterDeviceType.DimmableLight }
+];
+
+function matterTypeRolePair(
+  type: MatterDeviceType
+): Record<MatterTypeRole, MatterDeviceType> | null {
+  return MATTER_TYPE_ROLE_PAIRS.find((p) => p.plug === type || p.light === type) ?? null;
+}
+
+/**
+ * 'plug' / 'light' for the switchable device types, null for everything else
+ * (blinds, thermostats, sensors — no user choice to make).
+ *
+ * Eligibility is deliberately keyed on the *resolved Matter device type*, not
+ * on the HM channel type: the device-type inference fallback maps UNKNOWN +
+ * HmIP-PSM to SWITCH, and a channel-type allowlist would silently make those
+ * channels non-overridable in the Web UI.
+ */
+export function matterTypeRoleOf(type: MatterDeviceType): MatterTypeRole | null {
+  const pair = matterTypeRolePair(type);
+  if (!pair) return null;
+  return pair.plug === type ? 'plug' : 'light';
+}
+
+export interface MapChannelOptions {
+  room?: string;
+  /** true = force venetian (expose tilt), false = force lift-only,
+   *  undefined = auto-detect from LEVEL_2. */
+  tiltOverride?: boolean;
+  /** User's Plug/Light choice for switch/dimmer channels; undefined = use the
+   *  mapping's default. Ignored for channel types with no such choice. */
+  typeOverride?: MatterTypeRole;
+}
+
 // Mapping configuration
 interface DeviceTypeMapping {
   matterType: MatterDeviceType;
@@ -377,6 +433,10 @@ export interface MappedDevice {
    *  (venetian slats). MatterBridge uses this to decide whether to add the
    *  Tilt / PositionAwareTilt features to WindowCoveringServer. */
   hasTilt?: boolean;
+  /** The auto-detected Plug/Light role *before* any user override, so the Web
+   *  UI can label the selector "Auto (Plug)". Absent for channel types with no
+   *  such choice — that absence is also the UI's "not overridable" signal. */
+  defaultMatterRole?: MatterTypeRole;
 }
 
 export class DeviceMapper {
@@ -391,9 +451,9 @@ export class DeviceMapper {
     deviceType: string,
     name: string,
     currentValues: Record<string, any>,
-    room?: string,
-    tiltOverride?: boolean
+    options: MapChannelOptions = {}
   ): MappedDevice | null {
+    const { room, tiltOverride, typeOverride } = options;
 
     // Skip non-functional channel types. MAINTENANCE exists on nearly every
     // device (battery, RSSI, firmware) and must never be bridged — otherwise
@@ -450,17 +510,34 @@ export class DeviceMapper {
       delete valueMappings.LEVEL_2;
     }
 
+    // Plug-vs-Light presentation override.
+    //
+    // Strictly opt-in: an absent, undefined or equal-to-default `typeOverride`
+    // falls through to `mapping.matterType` unchanged, so installs that never
+    // touch the Web UI keep the exact device types they have today. A stray
+    // override on an ineligible channel type (blind, sensor) is ignored — it
+    // must never be able to turn a WindowCovering into a light.
+    //
+    // Both members of a pair are cluster-identical, so `mapping.clusters` and
+    // `valueMappings` are unaffected; only the advertised device type changes.
+    const defaultMatterRole = matterTypeRoleOf(mapping.matterType);
+    let matterDeviceType = mapping.matterType;
+    if (defaultMatterRole && typeOverride && typeOverride !== defaultMatterRole) {
+      matterDeviceType = matterTypeRolePair(mapping.matterType)![typeOverride];
+    }
+
     const mappedDevice: MappedDevice = {
       hmAddress: address,
       hmChannelType: channelType,
       hmDeviceType: deviceType,
-      matterDeviceType: mapping.matterType,
+      matterDeviceType,
       clusters: mapping.clusters,
       name: name || address,
       room: room,
       valueMappings,
       currentState: {},
       hasTilt: hasTilt ? true : undefined,
+      defaultMatterRole: defaultMatterRole ?? undefined,
     };
 
     // Convert current values to Matter format. '' means "value unknown"

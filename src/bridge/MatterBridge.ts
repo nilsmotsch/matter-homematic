@@ -136,6 +136,9 @@ export class MatterHomematicBridge {
    *  poll-driven onOff updates (same pattern as device currentState). */
   private sysVarState: Map<string, boolean> = new Map();
   private sysVarPollTimer?: NodeJS.Timeout;
+  /** Tail of the pending CCU write chain per target (HM address or
+   *  `sysvar:<id>`) — see enqueueCcuWrite. */
+  private ccuWriteQueues: Map<string, Promise<void>> = new Map();
   /** Stable Matter endpoint numbers, keyed by endpoint id (e.g.
    *  hm-SHELLY0008-1, sysvar-1234). matter.js allocates numbers from a
    *  monotonic counter and frees them on Endpoint.delete(), so an
@@ -483,6 +486,31 @@ export class MatterHomematicBridge {
   }
 
   /**
+   * Run a Matter → CCU write without blocking the Matter command.
+   *
+   * matter.js runs `$Changed` observers in the transaction's post-commit
+   * phase and awaits them before answering the invoke, so awaiting the
+   * XML-RPC round trip there held every command until the CCU replied.
+   * Controllers cap in-flight commands, so "turn off 11 lights" trickled
+   * out one CCU round trip (0.4–3 s, worse for slow Shellys) at a time.
+   * Nothing is lost by detaching: a post-commit failure is only logged by
+   * matter.js anyway, never reported back to the controller.
+   *
+   * Writes to the same `key` stay strictly ordered (dimmer on → level,
+   * venetian LEVEL_2 → LEVEL commit); different keys run in parallel.
+   */
+  private enqueueCcuWrite(key: string, write: () => Promise<void>): void {
+    const tail = (this.ccuWriteQueues.get(key) ?? Promise.resolve())
+      .then(write)
+      // CcuConnector already logs failed setValue/getValue calls at error level.
+      .catch((err) => { getLogger().debug(`CCU write for ${key} failed: ${err}`); })
+      .finally(() => {
+        if (this.ccuWriteQueues.get(key) === tail) this.ccuWriteQueues.delete(key);
+      });
+    this.ccuWriteQueues.set(key, tail);
+  }
+
+  /**
    * Create OnOff device (switch/plug)
    */
   private createOnOffDevice(id: string, device: MappedDevice, bridgedInfo: any): Endpoint {
@@ -498,7 +526,7 @@ export class MatterHomematicBridge {
     );
 
     // Handle state changes from Matter
-    endpoint.events.onOff.onOff$Changed.on(async (value) => {
+    endpoint.events.onOff.onOff$Changed.on((value) => {
       // Echo from a CCU-originated update — don't bounce it back.
       if (device.currentState.onOff === value) return;
       getLogger().info(`Matter -> CCU: ${device.hmAddress} STATE = ${value}`);
@@ -506,7 +534,7 @@ export class MatterHomematicBridge {
         device.hmAddress, 'onOff', 'onOff', value
       );
       if (hmValue) {
-        await this.ccuConnector.setValue(device.hmAddress, hmValue.key, hmValue.value);
+        this.enqueueCcuWrite(device.hmAddress, () => this.ccuConnector.setValue(device.hmAddress, hmValue.key, hmValue.value));
       }
     });
 
@@ -537,25 +565,25 @@ export class MatterHomematicBridge {
     );
 
     // Handle on/off from Matter
-    endpoint.events.onOff.onOff$Changed.on(async (value) => {
+    endpoint.events.onOff.onOff$Changed.on((value) => {
       getLogger().info(`Matter -> CCU: ${device.hmAddress} ON/OFF = ${value}`);
       const hmValue = this.deviceMapper.convertToHomematic(
         device.hmAddress, 'onOff', 'onOff', value
       );
       if (hmValue) {
-        await this.ccuConnector.setValue(device.hmAddress, hmValue.key, hmValue.value);
+        this.enqueueCcuWrite(device.hmAddress, () => this.ccuConnector.setValue(device.hmAddress, hmValue.key, hmValue.value));
       }
     });
 
     // Handle level from Matter
-    endpoint.events.levelControl.currentLevel$Changed.on(async (value) => {
+    endpoint.events.levelControl.currentLevel$Changed.on((value) => {
       if (value !== null && value !== undefined) {
         getLogger().info(`Matter -> CCU: ${device.hmAddress} LEVEL = ${value}`);
         const hmValue = this.deviceMapper.convertToHomematic(
           device.hmAddress, 'levelControl', 'currentLevel', value
         );
         if (hmValue) {
-          await this.ccuConnector.setValue(device.hmAddress, hmValue.key, hmValue.value);
+          this.enqueueCcuWrite(device.hmAddress, () => this.ccuConnector.setValue(device.hmAddress, hmValue.key, hmValue.value));
         }
       }
     });
@@ -613,7 +641,7 @@ export class MatterHomematicBridge {
         },
       );
 
-      endpoint.events.windowCovering.targetPositionLiftPercent100ths$Changed.on(async (value: any) => {
+      endpoint.events.windowCovering.targetPositionLiftPercent100ths$Changed.on((value: any) => {
         if (value !== null && value !== undefined) {
           // Echo from a CCU-originated update (deviceEvent wrote this
           // value into currentState before setting the attribute) — don't
@@ -627,12 +655,12 @@ export class MatterHomematicBridge {
             device.hmAddress, 'windowCovering', 'currentPositionLiftPercent100ths', value,
           );
           if (hmValue) {
-            await this.ccuConnector.setValue(device.hmAddress, hmValue.key, hmValue.value);
+            this.enqueueCcuWrite(device.hmAddress, () => this.ccuConnector.setValue(device.hmAddress, hmValue.key, hmValue.value));
           }
         }
       });
 
-      endpoint.events.windowCovering.targetPositionTiltPercent100ths$Changed.on(async (value: any) => {
+      endpoint.events.windowCovering.targetPositionTiltPercent100ths$Changed.on((value: any) => {
         if (value !== null && value !== undefined) {
           if (device.currentState.targetPositionTiltPercent100ths === value) return;
           device.currentState.targetPositionTiltPercent100ths = value;
@@ -641,23 +669,27 @@ export class MatterHomematicBridge {
             device.hmAddress, 'windowCovering', 'currentPositionTiltPercent100ths', value,
           );
           if (hmValue) {
-            await this.ccuConnector.setValue(device.hmAddress, hmValue.key, hmValue.value);
-            // HmIP blind actuators latch LEVEL_2 and only execute it when
-            // LEVEL is written afterwards — a lone LEVEL_2 write does
-            // nothing. Re-send the current/last-commanded lift to trigger
-            // the slat move without changing blind height.
-            const liftMatter = device.currentState.targetPositionLiftPercent100ths
-              ?? device.currentState.currentPositionLiftPercent100ths;
-            const liftHm = liftMatter !== undefined && liftMatter !== null
-              ? this.deviceMapper.convertToHomematic(
-                  device.hmAddress, 'windowCovering', 'currentPositionLiftPercent100ths', liftMatter,
-                )
-              : null;
-            const liftValue = liftHm
-              ? liftHm.value
-              : await this.ccuConnector.getValue(device.hmAddress, 'LEVEL');
-            getLogger().info(`Matter -> CCU: ${device.hmAddress} LEVEL = ${liftValue} (tilt commit)`);
-            await this.ccuConnector.setValue(device.hmAddress, 'LEVEL', liftValue);
+            // One queued task so the LEVEL commit always directly follows
+            // its LEVEL_2 write.
+            this.enqueueCcuWrite(device.hmAddress, async () => {
+              await this.ccuConnector.setValue(device.hmAddress, hmValue.key, hmValue.value);
+              // HmIP blind actuators latch LEVEL_2 and only execute it when
+              // LEVEL is written afterwards — a lone LEVEL_2 write does
+              // nothing. Re-send the current/last-commanded lift to trigger
+              // the slat move without changing blind height.
+              const liftMatter = device.currentState.targetPositionLiftPercent100ths
+                ?? device.currentState.currentPositionLiftPercent100ths;
+              const liftHm = liftMatter !== undefined && liftMatter !== null
+                ? this.deviceMapper.convertToHomematic(
+                    device.hmAddress, 'windowCovering', 'currentPositionLiftPercent100ths', liftMatter,
+                  )
+                : null;
+              const liftValue = liftHm
+                ? liftHm.value
+                : await this.ccuConnector.getValue(device.hmAddress, 'LEVEL');
+              getLogger().info(`Matter -> CCU: ${device.hmAddress} LEVEL = ${liftValue} (tilt commit)`);
+              await this.ccuConnector.setValue(device.hmAddress, 'LEVEL', liftValue);
+            });
           }
         }
       });
@@ -696,7 +728,7 @@ export class MatterHomematicBridge {
       },
     );
 
-    endpoint.events.windowCovering.targetPositionLiftPercent100ths$Changed.on(async (value: any) => {
+    endpoint.events.windowCovering.targetPositionLiftPercent100ths$Changed.on((value: any) => {
       if (value !== null && value !== undefined) {
         if (device.currentState.targetPositionLiftPercent100ths === value) return;
         device.currentState.targetPositionLiftPercent100ths = value;
@@ -705,7 +737,7 @@ export class MatterHomematicBridge {
           device.hmAddress, 'windowCovering', 'currentPositionLiftPercent100ths', value,
         );
         if (hmValue) {
-          await this.ccuConnector.setValue(device.hmAddress, hmValue.key, hmValue.value);
+          this.enqueueCcuWrite(device.hmAddress, () => this.ccuConnector.setValue(device.hmAddress, hmValue.key, hmValue.value));
         }
       }
     });
@@ -734,14 +766,14 @@ export class MatterHomematicBridge {
     );
 
     // Handle setpoint changes from Matter
-    endpoint.events.thermostat.occupiedHeatingSetpoint$Changed.on(async (value: any) => {
+    endpoint.events.thermostat.occupiedHeatingSetpoint$Changed.on((value: any) => {
       if (value !== null && value !== undefined) {
         getLogger().info(`Matter -> CCU: ${device.hmAddress} SETPOINT = ${value}`);
         const hmValue = this.deviceMapper.convertToHomematic(
           device.hmAddress, 'thermostat', 'occupiedHeatingSetpoint', value
         );
         if (hmValue) {
-          await this.ccuConnector.setValue(device.hmAddress, hmValue.key, hmValue.value);
+          this.enqueueCcuWrite(device.hmAddress, () => this.ccuConnector.setValue(device.hmAddress, hmValue.key, hmValue.value));
         }
       }
     });
@@ -1158,17 +1190,19 @@ export class MatterHomematicBridge {
       }
     );
 
-    endpoint.events.onOff.onOff$Changed.on(async (value) => {
+    endpoint.events.onOff.onOff$Changed.on((value) => {
       // Echo from a poll-driven update (we wrote currentState before setting
       // the attribute) — don't bounce it back to the CCU.
       if (this.sysVarState.get(sv.id) === value) return;
       this.sysVarState.set(sv.id, value);
       getLogger().info(`Matter -> CCU: system variable ${sv.id} (${sv.name}) = ${value}`);
-      try {
-        await this.ccuConnector.setSystemVariable(sv.id, value);
-      } catch (err) {
-        getLogger().error(`Failed to set system variable ${sv.id}: ${err}`);
-      }
+      this.enqueueCcuWrite(`sysvar:${sv.id}`, async () => {
+        try {
+          await this.ccuConnector.setSystemVariable(sv.id, value);
+        } catch (err) {
+          getLogger().error(`Failed to set system variable ${sv.id}: ${err}`);
+        }
+      });
     });
 
     return endpoint;

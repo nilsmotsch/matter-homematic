@@ -152,6 +152,9 @@ export class MatterHomematicBridge {
    *  every fabric anyway) clears it too. */
   private endpointNumbers: Map<string, number> = new Map();
   private endpointNumbersPath?: string;
+  /** Where the bridge node's own serial number is pinned — see
+   *  resolveBridgeSerial(). Alexa re-adds every device when it changes. */
+  private bridgeSerialPath?: string;
 
   constructor(config: FullConfig) {
     this.config = config;
@@ -160,6 +163,7 @@ export class MatterHomematicBridge {
 
     if (config.bridge.storagePath) {
       this.endpointNumbersPath = path.join(config.bridge.storagePath, 'endpoint-numbers.json');
+      this.bridgeSerialPath = path.join(config.bridge.storagePath, 'bridge-serial.json');
       this.loadEndpointNumbers();
     }
 
@@ -319,7 +323,7 @@ export class MatterHomematicBridge {
         productName: "Matter-Homematic Bridge",
         productId: this.config.bridge.productId,
         nodeLabel: this.config.bridge.name,
-        serialNumber: `MHB-${Date.now()}`,
+        serialNumber: this.resolveBridgeSerial(),
         hardwareVersion: 1,
         hardwareVersionString: "1.0",
         softwareVersion: 1,
@@ -365,6 +369,44 @@ export class MatterHomematicBridge {
     } catch {
       // First run or unreadable — start empty and recapture below.
     }
+  }
+
+  /**
+   * The bridge node's own serial number, stable for the life of the install.
+   *
+   * This used to be `MHB-${Date.now()}`, i.e. a fresh identity on *every*
+   * restart. Bridged endpoints have always had stable serials (their HM
+   * address), but controllers key the **bridge** on the root node's
+   * BasicInformation — Amazon Alexa in particular treats a changed serial as a
+   * different bridge and re-adds every device behind it. Observed live: a
+   * routine restart re-added all 48 accessories even though no endpoint number
+   * or device type had changed.
+   *
+   * Persisted next to `endpoint-numbers.json` inside the Matter storage dir, so
+   * a factory reset (which deletes that dir and re-pairs every fabric anyway)
+   * correctly mints a new identity, while ordinary restarts and addon upgrades
+   * keep the old one. Without a storagePath we fall back to the old
+   * per-process value — nothing to persist into.
+   */
+  private resolveBridgeSerial(): string {
+    if (!this.bridgeSerialPath) return `MHB-${Date.now()}`;
+    try {
+      const stored = JSON.parse(fs.readFileSync(this.bridgeSerialPath, 'utf-8'));
+      if (typeof stored?.serialNumber === 'string' && stored.serialNumber.length > 0) {
+        return stored.serialNumber;
+      }
+    } catch {
+      // First run or unreadable — mint one below.
+    }
+    const serial = `MHB-${Date.now()}`;
+    try {
+      fs.mkdirSync(path.dirname(this.bridgeSerialPath), { recursive: true });
+      fs.writeFileSync(this.bridgeSerialPath, JSON.stringify({ serialNumber: serial }, null, 2));
+      getLogger().info(`Minted bridge serial number ${serial} (persisted; stable across restarts)`);
+    } catch (err) {
+      getLogger().warn(`Failed to persist bridge serial number: ${err}`);
+    }
+    return serial;
   }
 
   private persistEndpointNumbers(): void {
